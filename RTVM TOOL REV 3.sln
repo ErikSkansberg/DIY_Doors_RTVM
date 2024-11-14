@@ -1,0 +1,23 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.9.34723.18
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{888888A0-9F3D-457C-B088-3A5042F75D52}") = "RTVM TOOL REV 3", "RTVM TOOL REV 3\RTVM TOOL REV 3.pyproj", "{E6A03EFE-B1DE-42F7-AA7B-BF382AD0EA6A}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{E6A03EFE-B1DE-42F7-AA7B-BF382AD0EA6A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E6A03EFE-B1DE-42F7-AA7B-BF382AD0EA6A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {C58E0CE9-3ABE-4A72-A716-3AEB7DABDA6F}
+	EndGlobalSection
+EndGlobal
