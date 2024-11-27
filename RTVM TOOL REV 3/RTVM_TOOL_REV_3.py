@@ -1,3 +1,36 @@
+import sys
+import subprocess
+
+def install_and_import(package_name, import_name=None):
+    import_name = import_name or package_name
+    try:
+        __import__(import_name)
+    except ImportError:
+        print(f"Package '{import_name}' not found. Attempting to install '{package_name}'...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
+        try:
+            __import__(import_name)
+        except ImportError:
+            print(f"Failed to install and import '{package_name}'. Please install it manually.")
+            sys.exit(1)
+
+# List of (package_name_on_pip, import_name_in_code)
+required_packages = [
+    ("pandas", "pandas"),
+    ("numpy", "numpy"),
+    ("matplotlib", "matplotlib"),
+    ("openpyxl", "openpyxl"),
+    ("pyspellchecker", "spellchecker"),  # Note the difference here
+    # Tkinter is part of the standard library but may need installation on some systems
+]
+
+# Attempt to install and import each package
+for package_name, import_name in required_packages:
+    install_and_import(package_name, import_name)
+
+
+
+
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import re
@@ -21,8 +54,6 @@ class PatternDialog(tk.Toplevel):
         # Initialize variables
         self.obj_identifier = obj_identifier
         self.di_number = di_number
-        # Remove the incorrect binding
-        # self.table.bind("<<TreeviewSelect>>", self.on_table_row_select)
         self.deletions = []
 
         # Object Identifier
@@ -102,6 +133,11 @@ class PatternDialog(tk.Toplevel):
             self.button_frame, text="Reset", command=self.reset_fields)
         self.reset_button.grid(row=0, column=3, padx=5, pady=5)
 
+        # New Button to create the 180-Vessel Version
+        self.create_180_button = tk.Button(
+            self.button_frame, text="Also create a 180-Vessel Version", command=self.create_180_version)
+        self.create_180_button.grid(row=1, column=0, columnspan=4, padx=5, pady=5)
+
         # Generated Pattern
         self.output_label = tk.Label(self, text="Generated Pattern: For column G")
         self.output_label.grid(row=7, column=0, columnspan=3, sticky="w")
@@ -134,19 +170,18 @@ class PatternDialog(tk.Toplevel):
             self.root.grid_columnconfigure(3, weight=0)
             self.root.grid_columnconfigure(4, weight=0)
 
-
     def generate_pattern(self):
         # Clear output_text
         self.output_text.delete("1.0", tk.END)
         patterns = []
 
-        # Check if we can generate pattern1 and pattern2
-        can_generate_patterns = True
+        # Check if we can generate the pattern
+        can_generate_pattern = True
         error_messages = []
 
         if not self.status_var.get():
             error_messages.append("Contractor Assessed Status dropdown is blank.")
-            can_generate_patterns = False
+            can_generate_pattern = False
 
         if not self.page_sheet_entry.get().strip():
             error_messages.append("Page/Sheet input box is blank.")
@@ -156,8 +191,8 @@ class PatternDialog(tk.Toplevel):
             error_messages.append("Plan View/Section input box is blank.")
             can_generate_patterns = False
 
-        if can_generate_patterns:
-            # Generate patterns
+        if can_generate_pattern:
+            # Generate the first pattern
             obj_identifier = self.obj_identifier_entry.get().upper()
             cdrl_name = self.cdrl_name_entry.get().upper()
             page_sheet = self.page_sheet_entry.get()
@@ -165,29 +200,46 @@ class PatternDialog(tk.Toplevel):
             plan_view = self.plan_view_entry.get()
             plan_view_type = self.plan_view_option_var.get()
             status = self.status_var.get()
-            di_number = self.di_number_entry.get()
 
             detailed_location = f"{cdrl_name}, {page_sheet_type} {page_sheet}, {plan_view_type} {plan_view}"
 
             # First pattern line
             self.pattern1 = f"{obj_identifier};{detailed_location};{status}"
 
-            # Replace 160-WLIC with 180-WLR for the second line
-            detailed_location_wlr = detailed_location.replace("160-WLIC", "180-WLR")
-            self.pattern2 = f"ADD;{di_number};{detailed_location_wlr};{status}"
-
             patterns.append(self.pattern1)
-            patterns.append(self.pattern2)
         else:
             if error_messages:
                 messagebox.showerror("Error", "\n".join(error_messages))
-
-        # Add deletions
-        for del_pattern in self.deletions:
-            patterns.append(del_pattern)
+                return  # Exit the method to avoid adding empty patterns
 
         # Output patterns
         self.output_text.insert(tk.END, "\n".join(patterns))
+
+
+    def create_180_version(self):
+        # Check if the first pattern has been generated
+        if not hasattr(self, 'pattern1'):
+            messagebox.showerror("Error", "Please generate the initial pattern first.")
+            return
+
+        # Generate the second pattern
+        obj_identifier = self.obj_identifier_entry.get().upper()
+        cdrl_name = self.cdrl_name_entry.get().upper()
+        page_sheet = self.page_sheet_entry.get()
+        page_sheet_type = self.page_sheet_option_var.get()
+        plan_view = self.plan_view_entry.get()
+        plan_view_type = self.plan_view_option_var.get()
+        status = self.status_var.get()
+        di_number = self.di_number_entry.get()
+
+        detailed_location = f"{cdrl_name}, {page_sheet_type} {page_sheet}, {plan_view_type} {plan_view}"
+
+        # Replace 160-WLIC with 180-WLR
+        detailed_location_wlr = detailed_location.replace("160-WLIC", "180-WLR")
+        self.pattern2 = f"ADD;{di_number};{detailed_location_wlr};{status}"
+
+        # Append the second pattern to the output
+        self.output_text.insert(tk.END, "\n" + self.pattern2)
 
     def copy_to_clipboard(self):
         # Clear the clipboard
@@ -331,7 +383,7 @@ class RTVMApp:
         self.create_pie_charts_button.grid(row=0, column=8, padx=5, pady=5)
 
         # Show/Hide History Tables Checkbox
-        self.show_history_var = tk.IntVar(value=1)  # 1 means checked (show tables by default)
+        self.show_history_var = tk.IntVar(value=0)  # 0 means unchecked (hide tables by default)
         self.show_history_checkbox = tk.Checkbutton(
             self.button_frame_top,
             text="Show History Tables",
@@ -340,20 +392,30 @@ class RTVMApp:
         )
         self.show_history_checkbox.grid(row=0, column=9, padx=5, pady=5)
 
+        # Show/Hide Progress Bar Checkbox
+        self.show_progress_var = tk.IntVar(value=0)  # 0 means unchecked (hide progress bar by default)
+        self.show_progress_checkbox = tk.Checkbutton(
+            self.button_frame_top,
+            text="Show Progress Bar",
+            variable=self.show_progress_var,
+            command=self.toggle_progress_bar
+        )
+        self.show_progress_checkbox.grid(row=1, column=9, padx=5, pady=5)
+
         # Row Indicator
         self.row_indicator_var = tk.StringVar(value="Row: 0")
         self.row_indicator_label = tk.Label(
             root, textvariable=self.row_indicator_var)
-        self.row_indicator_label.grid(row=1, column=0, sticky="w")
+        self.row_indicator_label.grid(row=1, column=1, sticky="w")
 
         # Specification Text Label and Text Box
         self.spec_text_label = tk.Label(
             root, text="Specification Text")
-        self.spec_text_label.grid(row=2, column=0, columnspan=4, sticky="w")
+        self.spec_text_label.grid(row=2, column=1, columnspan=4, sticky="w")
 
         self.spec_text_box = tk.Text(
             root, height=4, width=70, bg="lightblue")
-        self.spec_text_box.grid(row=3, column=0, columnspan=9, sticky="nsew")
+        self.spec_text_box.grid(row=3, column=1, columnspan=9, sticky="nsew")
         self.spec_text_box.config(state=tk.DISABLED)
 
         # Version and POC Note
@@ -361,20 +423,41 @@ class RTVMApp:
             "Program Version 4\n"
             "POC: Eriks@birdon.us"
         ), justify="left", anchor="w")
-        self.version_note.grid(row=2, column=5, rowspan=6, sticky="nw")
+        self.version_note.grid(row=1, column=6, rowspan=6, sticky="nw")
+
+        # New Label Above Progress Bar
+        self.progress_label = tk.Label(
+            root, text="Progress Bar")
+        self.progress_label.grid(row=4, column=0, sticky="w")
+
+        # Progress Bar Table
+        self.progress_table = ttk.Treeview(
+            root, columns=("Row Number",), show="headings", height=20)
+        self.progress_table.grid(row=5, column=0, sticky="nsew")
+        self.progress_table.heading("Row Number", text="Row Number")
+        self.progress_table.column("Row Number", width=50, anchor="center")
+
+        # Bind click event
+        self.progress_table.bind("<ButtonRelease-1>", self.on_progress_bar_click)
+
+
+        # Initially hide the progress bar table
+        self.progress_label.grid_remove()
+        self.progress_table.grid_remove()
 
         # DI Number Breakdown Label
         self.table_label = tk.Label(
             root, text="DI Number Breakdown")
-        self.table_label.grid(row=4, column=0, sticky="w")
+        self.table_label.grid(row=4, column=1, sticky="w")
 
-        # Table to display the extracted information
-        self.table = ttk.Treeview(root, columns=("VeriDoc Number", "DI Number", "CDRL Subtitle", "Object Status",
-                                                 "Contractor Assessed Status", "Government Assessed Status"),
-                                  show="headings")
-        self.table.grid(row=5, column=0, sticky="nsew")
+        # DI Number Breakdown Table
+        self.table = ttk.Treeview(root, columns=(
+            "VeriDoc Number", "DI Number", "CDRL Subtitle", "Object Status",
+            "Contractor Assessed Status", "Government Assessed Status"),
+            show="headings")
+        self.table.grid(row=5, column=1, sticky="nsew")
 
-        # Configure headings here...
+        # Configure headings
         self.table.heading("VeriDoc Number", text="VeriDoc Number")
         self.table.heading("DI Number", text="DI Number")
         self.table.heading("CDRL Subtitle", text="CDRL Subtitle")
@@ -382,15 +465,15 @@ class RTVMApp:
         self.table.heading("Contractor Assessed Status", text="Contractor Assessed Status")
         self.table.heading("Government Assessed Status", text="Government Assessed Status")
 
-        # New Label Above Comments Section
+        # Comment Section Label
         self.comment_section_label = tk.Label(
             root, text="Comment from Birdon to USCG")
-        self.comment_section_label.grid(row=4, column=1, sticky="w")
+        self.comment_section_label.grid(row=4, column=2, sticky="w")
 
-        # Comment Table to allow user inputs
+        # Comment Table
         self.comment_table = ttk.Treeview(
             root, columns=("Comments",), show="headings")
-        self.comment_table.grid(row=5, column=1, sticky="nsew")
+        self.comment_table.grid(row=5, column=2, sticky="nsew")
         self.comment_table.heading("Comments", text="Comments")
 
         # Bind the right-click event to the comment table
@@ -398,41 +481,39 @@ class RTVMApp:
 
         # Remove double-click editing if desired
         self.comment_table.unbind('<Double-1>')
-        # Or modify the double-click behavior
-        # self.comment_table.bind('<Double-1>', self.on_comment_double_click)
 
-        # New Label Above Proposed Changes Table
+        # Proposed Changes Label
         self.proposed_changes_label = tk.Label(
             root, text="Contractor Proposed Change Request Input")
-        self.proposed_changes_label.grid(row=4, column=2, sticky="w")
+        self.proposed_changes_label.grid(row=4, column=3, sticky="w")
 
         # Proposed Changes Table
         self.proposed_changes_table = ttk.Treeview(
             root, columns=("Pattern",), show="headings")
         self.proposed_changes_table.grid(
-            row=5, column=2, sticky="nsew")
+            row=5, column=3, sticky="nsew")
         self.proposed_changes_table.heading("Pattern", text="Pattern")
 
-        # New Label Above the Contractor Proposed Change Comment History Table
+        # Comment History Label
         self.comment_history_label = tk.Label(
             root, text="Contractor Proposed Change Comment History")
-        self.comment_history_label.grid(row=4, column=3, sticky="w")
+        self.comment_history_label.grid(row=4, column=4, sticky="w")
 
-        # New Table for Contractor Proposed Change Comment History
+        # Comment History Table
         self.comment_history_table = ttk.Treeview(
             root, columns=("History",), show="headings")
-        self.comment_history_table.grid(row=5, column=3, sticky="nsew")
+        self.comment_history_table.grid(row=5, column=4, sticky="nsew")
         self.comment_history_table.heading("History", text="History")
 
-        # New Label Above the Government Adjudication Comment History Table
+        # Government Comment History Label
         self.gov_comment_history_label = tk.Label(
             root, text="Government Adjudication Comment History")
-        self.gov_comment_history_label.grid(row=4, column=4, sticky="w")
+        self.gov_comment_history_label.grid(row=4, column=5, sticky="w")
 
-        # Government Adjudication Comment History Table
+        # Government Comment History Table
         self.gov_comment_history_table = ttk.Treeview(
             root, columns=("History",), show="headings")
-        self.gov_comment_history_table.grid(row=5, column=4, sticky="nsew")
+        self.gov_comment_history_table.grid(row=5, column=5, sticky="nsew")
         self.gov_comment_history_table.heading("History", text="History")
 
         # Configure column widths (Optional)
@@ -447,6 +528,7 @@ class RTVMApp:
         self.proposed_changes_table.column("Pattern", width=400)
         self.comment_history_table.column("History", width=400)
         self.gov_comment_history_table.column("History", width=400)
+        self.progress_table.column("Row Number", width=50)
 
         # Configure styles for highlighting
         self.style = ttk.Style()
@@ -469,15 +551,108 @@ class RTVMApp:
         self.proposed_changes_table.bind("<Button-3>", self.show_proposed_changes_context_menu)
 
         # Configure grid weights for proper resizing
-        self.root.grid_columnconfigure(0, weight=1)
+        # Initially set weight=0 for progress bar column
+        self.root.grid_columnconfigure(0, weight=0)
         self.root.grid_columnconfigure(1, weight=1)
         self.root.grid_columnconfigure(2, weight=1)
         self.root.grid_columnconfigure(3, weight=1)
         self.root.grid_columnconfigure(4, weight=1)
+        self.root.grid_columnconfigure(5, weight=1)
         self.root.grid_rowconfigure(5, weight=1)
 
         # Initialize the visibility of history tables
         self.toggle_history_tables()
+
+        # Initialize the visibility of progress bar
+        self.toggle_progress_bar()
+
+
+    def on_progress_bar_click(self, event):
+        # Identify the row under the cursor
+        item_id = self.progress_table.identify_row(event.y)
+        if item_id:
+            # Get the row number from the item
+            row_value = self.progress_table.item(item_id, 'values')[0]
+            # Remove '>' if present
+            row_value = row_value.lstrip('>')
+            try:
+                selected_row_number = int(row_value)
+                # Adjust for zero-based index and header row
+                new_row_index = selected_row_number - 2  # Assuming header is on Excel row 1
+                max_row_index = len(self.df) - 1
+                if 0 <= new_row_index <= max_row_index:
+                    # Save any unsaved data before changing row
+                    self.save_comments_to_excel()
+                    # Update current row
+                    self.current_row = new_row_index
+                    # Update the UI
+                    self.update_ui_after_navigation()
+                    # Update row indicator
+                    self.row_indicator_var.set(f"Row: {self.current_row + 2}")
+                else:
+                    messagebox.showerror(
+                        "Invalid Row", "Selected row number is out of range.")
+            except ValueError:
+                pass  # If conversion to int fails, do nothing
+
+    def toggle_progress_bar(self):
+        if self.show_progress_var.get() == 1:
+            # Show the progress bar table and label
+            self.progress_label.grid()
+            self.progress_table.grid()
+            # Adjust column weights
+            self.root.grid_columnconfigure(0, weight=1)
+        else:
+            # Hide the progress bar table and label
+            self.progress_label.grid_remove()
+            self.progress_table.grid_remove()
+            # Adjust column weights
+            self.root.grid_columnconfigure(0, weight=0)
+
+    def populate_progress_table(self):
+        if self.df is None:
+            return
+        try:
+            # Clear existing items
+            self.progress_table.delete(*self.progress_table.get_children())
+            total_rows = len(self.df)
+            for i in range(2, total_rows + 2):  # Rows are numbered starting from 2
+                self.progress_table.insert("", "end", values=(str(i),))
+        except Exception as e:
+            print(f"Error populating progress table: {e}")
+
+            
+    def update_progress_bar_highlight(self):
+        # First, remove existing highlights
+        for item in self.progress_table.get_children():
+            # Remove all custom tags
+            self.progress_table.item(item, tags=())
+            # Get the row number
+            row_value = self.progress_table.item(item, 'values')[0]
+            # Remove '>' if present
+            if row_value.startswith('>'):
+                row_value = row_value[1:]
+                self.progress_table.item(item, values=(row_value,))
+        # Now, highlight the current row and filtered rows
+        current_row_number = self.current_row + 2  # Adjust for header
+        for item in self.progress_table.get_children():
+            row_value = self.progress_table.item(item, 'values')[0]
+            df_row_index = int(row_value) - 2  # Adjust for DataFrame index
+            tags = []
+            # Check if this is the current row
+            if int(row_value.lstrip('>')) == current_row_number:
+                # Add '>' and 'current_row' tag
+                self.progress_table.item(item, values=('>' + row_value.lstrip('>'),))
+                tags.append('current_row')
+            # Check if filters are applied and this row is in filtered rows
+            elif hasattr(self, 'filtered_row_indices') and self.filtered_row_indices and df_row_index in self.filtered_row_indices:
+                tags.append('filtered_row')
+            # Set the tags
+            self.progress_table.item(item, tags=tuple(tags))
+        # Configure the highlight styles
+        self.progress_table.tag_configure('current_row', background='lightblue')
+        self.progress_table.tag_configure('filtered_row', background='yellow')
+
 
     def toggle_history_tables(self):
         if self.show_history_var.get() == 1:
@@ -525,6 +700,10 @@ class RTVMApp:
                 # Process the DataFrame to extract statuses
                 self.process_statuses()
 
+                # **Add this line to populate the progress bar table**
+                self.populate_progress_table()
+
+                # Update the UI
                 self.update_ui_after_navigation()
                 self.row_indicator_var.set(f"Row: {self.current_row + 2}")
                 messagebox.showinfo(
@@ -532,6 +711,7 @@ class RTVMApp:
             except Exception as e:
                 messagebox.showerror(
                     "Error", f"Failed to load Excel file: {e}")
+
 
     def process_statuses(self):
         self.status_data = []  # List to store status info for each status entry
@@ -688,7 +868,8 @@ class RTVMApp:
                 "No Results", "No rows match the selected filters.")
         # Close the filter window
         self.filter_window.destroy()
-
+        # Update the progress bar highlight
+        self.update_progress_bar_highlight()
     def clear_filters(self):
         if hasattr(self, 'filtered_row_indices'):
             del self.filtered_row_indices
@@ -696,6 +877,8 @@ class RTVMApp:
         self.update_ui_after_navigation()
         self.row_indicator_var.set(f"Row: {self.current_row + 2}")
         messagebox.showinfo("Filter Cleared", "Filters have been cleared.")
+        # Update the progress bar highlight
+        self.update_progress_bar_highlight()
 
     def navigate_cells(self, direction):
         if self.df is None:
@@ -911,13 +1094,26 @@ class RTVMApp:
         # Identify the row under the cursor
         row_id = self.table.identify_row(event.y)
         if row_id:
-            # Create a context menu
-            menu = tk.Menu(self.root, tearoff=0)
-            menu.add_command(
-                label="Set DI Number to match CDRL", command=lambda: self.set_di_number(row_id))
-            menu.add_command(
-                label="Delete DI Number", command=lambda: self.delete_di_number(row_id))
-            menu.post(event.x_root, event.y_root)
+            # Get values from the selected row
+            item = self.table.item(row_id)
+            values = item['values']
+            if values:
+                object_status = values[3]  # Object Status is at index 3
+                if object_status.lower() == "depreciated":
+                    # Show message and do not display context menu
+                    messagebox.showinfo("Information", "This item is locked as it is depreciated. You do not need to do anything with this")
+                else:
+                    # Create a context menu
+                    menu = tk.Menu(self.root, tearoff=0)
+                    menu.add_command(
+                        label="Set DI Number to match CDRL", command=lambda: self.set_di_number(row_id))
+                    menu.add_command(
+                        label="Delete DI Number", command=lambda: self.delete_di_number(row_id))
+                    menu.post(event.x_root, event.y_root)
+            else:
+                # If no values are present, you might want to handle this case
+                messagebox.showerror("Error", "No data available for the selected row.")
+
 
     def set_di_number(self, row_id):
         # Get values from the selected row
@@ -955,20 +1151,53 @@ class RTVMApp:
             # Create deletion pattern
             del_pattern = f"DEL; {obj_id}"
 
-            if self.pattern_dialog and self.pattern_dialog.winfo_exists():
-                # Add to existing PatternDialog
-                self.pattern_dialog.deletions.append(del_pattern)
-                self.pattern_dialog.generate_pattern()
-            else:
-                # Open a new PatternDialog
-                pattern_dialog = PatternDialog(
-                    self.root, self, obj_id, "", self.current_row)
-                pattern_dialog.deletions = [del_pattern]
-                pattern_dialog.generate_pattern()
-                self.pattern_dialog = pattern_dialog
+            # Save the deletion pattern to Excel
+            self.save_deletion_to_excel(del_pattern)
+
+            # Update the Proposed Changes Table
+            self.update_proposed_changes_table()
+
+            messagebox.showinfo("Success", "DI Number deleted and changes saved to Excel file successfully.")
         else:
-            messagebox.showerror(
-                "Error", "No data available for the selected row.")
+            messagebox.showerror("Error", "No data available for the selected row.")
+
+
+    def save_deletion_to_excel(self, del_pattern):
+        # Get existing content from cell G (column index 6) of the current row
+        existing_content = self.df.iloc[self.current_row, 6]
+        if pd.isna(existing_content):
+            existing_content = ""
+        elif not isinstance(existing_content, str):
+            existing_content = str(existing_content)
+
+        # Append the new deletion pattern to the existing content
+        if existing_content.strip():
+            new_content = existing_content.strip() + "\n" + del_pattern
+        else:
+            new_content = del_pattern
+
+        # Update the Excel file directly using openpyxl
+        from openpyxl import load_workbook
+
+        try:
+            # Load the workbook
+            wb = load_workbook(self.excel_file_path)
+            ws = wb.active  # You may need to select the correct sheet if there are multiple
+
+            # Calculate the Excel row number (considering headers)
+            excel_row = self.current_row + 2  # Assuming header is on the first row
+
+            # Update the cell in column G (which is column index 7 in openpyxl)
+            ws.cell(row=excel_row, column=7, value=new_content)
+
+            # Save the workbook
+            wb.save(self.excel_file_path)
+
+            # Update the DataFrame in memory
+            self.df.iloc[self.current_row, 6] = new_content
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save deletion to Excel file: {e}")
 
     def on_table_row_select(self, event):
         # Clear previous highlights
@@ -1213,6 +1442,8 @@ class RTVMApp:
                 self.update_proposed_changes_table()
                 # **Update the Comment History Table**
                 self.update_comment_history_table()
+                # Update the progress bar highlight
+                self.update_progress_bar_highlight()
             else:
                 messagebox.showerror(
                     "Error", "No data available at this row.")
@@ -1465,7 +1696,7 @@ class RTVMApp:
             self.total_counts[key] = counter
 
     def save_comments_to_excel(self):
-        # Prepare the content for column H
+        # Prepare the content for the 'Contractor Proposed Change Comment Input' column
         comment_lines = []
         for obj_id, comment_text in self.current_comments.items():
             comment_line = f"{obj_id} - {comment_text}"
@@ -1481,16 +1712,27 @@ class RTVMApp:
             ws = wb.active  # Or specify the sheet if needed
 
             # Calculate the Excel row number (considering headers)
-            excel_row = self.current_row + 2  # Assuming header is on the first row
+            excel_row = self.current_row + 2  # Adjust if your header is on a different row
 
-            # Update the cell in column H (which is column index 8 in openpyxl)
-            ws.cell(row=excel_row, column=8, value=comments_content)
+            # Find the column index for 'Contractor Proposed Change Comment Input'
+            column_letter = None
+            for col in ws.iter_cols(1, ws.max_column):
+                if col[0].value == 'Contractor Proposed Change Comment Input':
+                    column_letter = col[0].column_letter
+                    break
+
+            if column_letter is None:
+                messagebox.showerror("Error", "Column 'Contractor Proposed Change Comment Input' not found in Excel file.")
+                return
+
+            # Update the cell in the correct column
+            ws[f"{column_letter}{excel_row}"] = comments_content
 
             # Save the workbook
             wb.save(self.excel_file_path)
 
             # Update the DataFrame in memory
-            self.df.iloc[self.current_row, self.df.columns.get_loc('Comments Column Name')] = comments_content
+            self.df.at[self.current_row, 'Contractor Proposed Change Comment Input'] = comments_content
 
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save comments to Excel file: {e}")
@@ -1566,6 +1808,33 @@ class RTVMApp:
                                 command=lambda: self.save_comment(row_id, text_box.get("1.0", tk.END), comment_window))
         save_button.pack(pady=10)
 
+    def check_spelling(self, text_widget, spell):
+        # Get the content of the text widget
+        content = text_widget.get("1.0", tk.END)
+
+        # Split the content into words with positions
+        words = content.split()
+        index = "1.0"
+
+        # Clear previous tags
+        text_widget.tag_remove("misspelled", "1.0", tk.END)
+
+        for word in words:
+            # Clean the word by removing punctuation
+            clean_word = ''.join(char for char in word if char.isalpha())
+
+            # Get the start and end index of the word
+            start_index = text_widget.search(word, index, stopindex=tk.END)
+            if not start_index:
+                continue
+            end_index = f"{start_index}+{len(word)}c"
+
+            # Update the index for the next search
+            index = end_index
+
+            if clean_word.lower() not in spell:
+                # Highlight the misspelled word
+                text_widget.tag_add("misspelled", start_index, end_index)
 
     def on_right_click(self, event, text_widget, spell):
         # Get the index of the mouse click
@@ -1613,6 +1882,11 @@ class RTVMApp:
             else:
                 # No ' - ', treat the entire text as comment
                 self.current_comments[obj_id] = new_text.strip()
+
+        # Save comments to Excel file immediately
+        self.save_comments_to_excel()
+        
+
 
 
 
