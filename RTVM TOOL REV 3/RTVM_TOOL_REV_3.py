@@ -1,4 +1,4 @@
-import sys
+﻿import sys
 import subprocess
 
 def install_and_import(package_name, import_name=None):
@@ -313,6 +313,7 @@ class PatternDialog(tk.Toplevel):
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save to Excel file: {e}")
 
+import threading
 class RTVMApp:
     def __init__(self, root):
         self.root = root
@@ -580,6 +581,20 @@ class RTVMApp:
         # Initialize the visibility of progress bar
         self.toggle_progress_bar()
 
+        #this prevents save functions from running multiple times
+        self.save_lock = threading.Lock()  # Prevent simultaneous saves
+
+
+    #this will allow the saving process to happen in its own thread in the background. 
+    def save_comments_to_excel_background(self):
+        def save_worker():
+            try:
+                with self.save_lock:
+                    self.save_comments_to_excel()
+            except Exception as e:
+                # Optionally, if you need to show an error, schedule it on the main thread:
+                self.root.after(0, lambda: messagebox.showerror("Error", f"Background save error: {e}"))
+        threading.Thread(target=save_worker, daemon=True).start()
 
 
 
@@ -599,10 +614,11 @@ class RTVMApp:
         self.available_tools = {
             "Compaire Tool": self.open_comair_tool_window,
             "Remove Previously Submitted Requests": self.open_remove_requests_tool_window,
-            "RTVM Subset Management": self.open_rvtm_subset_management_window
+            "RTVM Subset Management": self.open_rvtm_subset_management_window,
+            "Disagreement Manager": self.open_disagreement_manager
+        }
             # Later on, you can add more tools here:
             # "Another Tool": self.open_another_tool_window
-        }
 
         # Create a StringVar and Combobox for tool selection
         self.selected_tool = tk.StringVar(value="Compaire Tool")
@@ -624,6 +640,43 @@ class RTVMApp:
             self.available_tools[tool_name]()
         else:
             messagebox.showerror("Error", "Selected tool is not available.")
+
+
+
+
+
+### START OF DIAGREEMENT TOOL 
+    def open_disagreement_manager(self):
+        if self.df is None:
+            messagebox.showerror("Error", "No main Excel file is loaded. Please upload a main file first.")
+            return
+
+        # Filter rows
+        # We need Government Assessed Status = "Disagree" and Object Status = "Accepted"
+        # We'll use self.status_data which should have these fields
+        # self.status_data is a list of dicts with keys like 'row_index', 'object_status', 'government_status', etc.
+        filtered = [item for item in self.status_data 
+                    if item['government_status'].strip().lower() == 'disagree' and 
+                       item['object_status'].strip().lower() == 'accepted']
+
+        if not filtered:
+            messagebox.showinfo("No Disagreements", "No rows found with Government Assessed Status = Disagree and Object Status = Accepted.")
+            return
+
+        # Create the disagreement manager window
+        self.disagreement_window = tk.Toplevel(self.root)
+        self.disagreement_window.title("Disagreement Manager")
+
+        # Create an instance of DisagreementManager class
+        self.disagreement_manager = DisagreementManager(self.disagreement_window, self, filtered)
+
+
+### END OF DIAGREEMENT TOOL             
+
+
+
+
+
 
      #### START OF REMOVAL TOOL
     def open_remove_requests_tool_window(self):
@@ -691,47 +744,76 @@ class RTVMApp:
             messagebox.showerror("Error", f"Failed to read old Excel file: {e}")
             return
 
-        # Identify columns:
-        object_id_col = 0  # Adjust if needed
-        proposed_changes_col = 6  # Column G is index 6
+        # Identify columns in the current DF
+        # Proposed Changes Column (G) is known to be at index 6
+        proposed_changes_col = 6
 
-        # Validate column indexes
-        if object_id_col >= len(self.df.columns) or proposed_changes_col >= len(self.df.columns):
-            messagebox.showerror("Error", "Columns for Object Identifier or Proposed Changes not found in new file.")
+        # Identify the "Contractor Proposed Change Comment Input" column by name
+        comment_col_name = "Contractor Proposed Change Comment Input"
+        if comment_col_name not in self.df.columns:
+            messagebox.showerror("Error", f"Column '{comment_col_name}' not found in new file.")
+            return
+        comment_col = self.df.columns.get_loc(comment_col_name)
+
+        # Validate column indexes in the old file
+        if proposed_changes_col >= len(self.df.columns):
+            messagebox.showerror("Error", "Proposed Changes column not found in new file.")
+            return
+        if proposed_changes_col >= len(old_df.columns):
+            messagebox.showerror("Error", "Proposed Changes column not found in old file.")
             return
 
-        if object_id_col >= len(old_df.columns) or proposed_changes_col >= len(old_df.columns):
-            messagebox.showerror("Error", "Columns for Object Identifier or Proposed Changes not found in old file.")
+        if comment_col >= len(self.df.columns):
+            messagebox.showerror("Error", f"'{comment_col_name}' column not found in new file.")
+            return
+        if comment_col >= len(old_df.columns):
+            messagebox.showerror("Error", f"'{comment_col_name}' column not found in old file.")
             return
 
-        # Convert object ID columns to string
+        # Convert object ID columns to string (Object ID is assumed to be column 0)
+        object_id_col = 0
         self.df.iloc[:, object_id_col] = self.df.iloc[:, object_id_col].astype(str)
         old_df.iloc[:, object_id_col] = old_df.iloc[:, object_id_col].astype(str)
 
-        # Create a dictionary from old_df: {object_id: set_of_old_patterns}
+        # Create a dictionary from old_df for old patterns
         old_patterns_map = {}
         for idx, row in old_df.iterrows():
-            obj_id = row.iloc[object_id_col]
+            obj_id = str(row.iloc[object_id_col])
             old_patterns_str = row.iloc[proposed_changes_col]
             if pd.isna(old_patterns_str):
                 old_patterns_str = ""
             old_lines = [line.strip() for line in old_patterns_str.split('\n') if line.strip()]
             old_patterns_set = set(old_lines)
-            old_patterns_map[obj_id] = old_patterns_set
+            old_patterns_map[obj_id] = {
+                'patterns': old_patterns_set
+            }
+
+        # Also create a dictionary for old comments (from the old file)
+        old_comments_map = {}
+        for idx, row in old_df.iterrows():
+            obj_id = str(row.iloc[object_id_col])
+            old_comments_str = row.iloc[comment_col]
+            if pd.isna(old_comments_str):
+                old_comments_str = ""
+            old_comment_lines = [line.strip() for line in old_comments_str.split('\n') if line.strip()]
+            old_comments_set = set(old_comment_lines)
+            if obj_id not in old_patterns_map:
+                old_patterns_map[obj_id] = {'patterns': set()}
+            # Add comments to the same map for convenience
+            old_patterns_map[obj_id]['comments'] = old_comments_set
 
         changes_made = False
 
-        # Remove previously submitted requests from the in-memory DataFrame
+        # Remove previously submitted requests from Proposed Changes (column G)
         for idx, row in self.df.iterrows():
-            obj_id = row.iloc[object_id_col]
+            obj_id = str(row.iloc[object_id_col])
             new_patterns_str = row.iloc[proposed_changes_col]
             if pd.isna(new_patterns_str):
                 new_patterns_str = ""
-
             new_lines = [line.strip() for line in new_patterns_str.split('\n') if line.strip()]
 
             if obj_id in old_patterns_map:
-                old_patterns_set = old_patterns_map[obj_id]
+                old_patterns_set = old_patterns_map[obj_id]['patterns']
                 # Filter out any patterns that exist in old file
                 filtered_lines = [line for line in new_lines if line not in old_patterns_set]
                 if len(filtered_lines) != len(new_lines):
@@ -739,8 +821,24 @@ class RTVMApp:
                     updated_str = '\n'.join(filtered_lines)
                     self.df.iat[idx, proposed_changes_col] = updated_str
 
+        # Remove previously submitted comments from "Contractor Proposed Change Comment Input" column
+        for idx, row in self.df.iterrows():
+            obj_id = str(row.iloc[object_id_col])
+            new_comments_str = row.iloc[comment_col]
+            if pd.isna(new_comments_str):
+                new_comments_str = ""
+            new_comment_lines = [line.strip() for line in new_comments_str.split('\n') if line.strip()]
+
+            if obj_id in old_patterns_map and 'comments' in old_patterns_map[obj_id]:
+                old_comments_set = old_patterns_map[obj_id]['comments']
+                filtered_comment_lines = [line for line in new_comment_lines if line not in old_comments_set]
+                if len(filtered_comment_lines) != len(new_comment_lines):
+                    changes_made = True
+                    updated_comments_str = '\n'.join(filtered_comment_lines)
+                    self.df.iat[idx, comment_col] = updated_comments_str
+
         if not changes_made:
-            messagebox.showinfo("No Changes", "No previously submitted requests were found to remove.")
+            messagebox.showinfo("No Changes", "No previously submitted requests or comments were found to remove.")
             return
 
         # If changes were made, update the Excel file preserving formatting
@@ -750,24 +848,37 @@ class RTVMApp:
             wb = load_workbook(self.excel_file_path)
             ws = wb.active  # Adjust if you need a specific sheet
 
-            # Update only the changed cells (patterns in column G)
-            # DataFrame rows start at 0, Excel rows start at 2 (assuming row 1 is header)
+            # Find the column indexes in the Excel sheet
+            # Column G (Proposed Changes) = 7 in 1-based indexing
+            # For 'Contractor Proposed Change Comment Input', find the correct column by header
+            header_row = 1
+            comment_col_letter = None
+            for col in range(1, ws.max_column + 1):
+                header_val = ws.cell(row=header_row, column=col).value
+                if header_val == comment_col_name:
+                    comment_col_letter = col
+                    break
+
+            # Update only the changed cells
             for idx, row in self.df.iterrows():
                 new_content = row.iloc[proposed_changes_col]
                 if pd.isna(new_content):
                     new_content = ""
-                elif not isinstance(new_content, str):
-                    new_content = str(new_content)
+                ws.cell(row=idx+2, column=7, value=new_content)  # Proposed Changes column (G)
 
-                excel_row = idx + 2  # DataFrame index 0 -> Excel row 2
-                ws.cell(row=excel_row, column=7, value=new_content)  # Column G = 7
+                new_comment_content = row.iloc[comment_col]
+                if pd.isna(new_comment_content):
+                    new_comment_content = ""
+                if comment_col_letter is not None:
+                    ws.cell(row=idx+2, column=comment_col_letter, value=new_comment_content)
 
             wb.save(self.excel_file_path)
 
-            # Update the DataFrame in memory is already done (self.df was updated above)
-            messagebox.showinfo("Success", "Previously submitted requests have been removed and the file has been updated.")
+            # DataFrame in memory is already updated
+            messagebox.showinfo("Success", "Previously submitted requests and comments have been removed and the file has been updated.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save updated file: {e}")
+
 
 ### END of removal Tool
 
@@ -2617,17 +2728,16 @@ class RTVMApp:
     def navigate_cells(self, direction):
         if self.df is None:
             return
-        # Save comments before navigating away
-        self.save_comments_to_excel()
-        # Continue with navigation
+
+        # Instead of a blocking save, run the save operation in a background thread.
+        self.save_comments_to_excel_background()
+
         if hasattr(self, 'filtered_row_indices') and self.filtered_row_indices:
             max_index = len(self.filtered_row_indices) - 1
             if direction == 'up':
-                self.current_filtered_index = max(
-                    self.current_filtered_index - 1, 0)
+                self.current_filtered_index = max(self.current_filtered_index - 1, 0)
             elif direction == 'down':
-                self.current_filtered_index = min(
-                    self.current_filtered_index + 1, max_index)
+                self.current_filtered_index = min(self.current_filtered_index + 1, max_index)
             self.current_row = self.filtered_row_indices[self.current_filtered_index]
         else:
             max_row = len(self.df) - 1
@@ -2666,8 +2776,7 @@ class RTVMApp:
 
         # Check if data is empty
         if not data.strip():
-            messagebox.showwarning(
-                "No Data", "No data available to extract.")
+            messagebox.showwarning("No Data", "No data available to extract.")
             return
 
         # Get comments from column H (index 7)
@@ -2676,6 +2785,7 @@ class RTVMApp:
             comments_content = ""
         elif not isinstance(comments_content, str):
             comments_content = str(comments_content)
+
         # Split into lines and create a dictionary
         comment_lines = comments_content.strip().split('\n')
         comments_dict = {}
@@ -2687,11 +2797,15 @@ class RTVMApp:
         # Store comments for the current row
         self.current_comments = comments_dict
 
-        # Extract and populate the table with all DI Numbers
-        matches = re.finditer(
-            r'Object Identifier:\s*(?P<obj_id>WCC-VERI-DOC-(?P<veridoc_num>\d+)).*?DI Number:\s*(?P<di_num>\d+-\d+).*?CDRL Subtitle:\s*(?P<cdrl_subtitle>.*?)\n.*?Object Status:\s*(?P<object_status>.*?)\n.*?Contractor Assessed Status:\s*(?P<contractor_status>.*?)\n.*?Government Assessed Status:\s*(?P<government_status>.*?)\n',
-            data, re.DOTALL
-        )
+        # Regex pattern to match full entries including Object Identifier, DI Number, etc.
+        pattern = (r'Object Identifier:\s*(?P<obj_id>WCC-VERI-DOC-(?P<veridoc_num>\d+)).*?'
+                   r'DI Number:\s*(?P<di_num>\d+-\d+).*?'
+                   r'CDRL Subtitle:\s*(?P<cdrl_subtitle>.*?)\n.*?'
+                   r'Object Status:\s*(?P<object_status>.*?)\n.*?'
+                   r'Contractor Assessed Status:\s*(?P<contractor_status>.*?)\n.*?'
+                   r'Government Assessed Status:\s*(?P<government_status>.*?)\n')
+
+        matches = re.finditer(pattern, data, re.DOTALL)
 
         count = 0  # Counter for the number of rows
         for match in matches:
@@ -2703,9 +2817,18 @@ class RTVMApp:
             contractor_status = match.group('contractor_status').strip()
             government_status = match.group('government_status').strip()
 
+            # Only insert into the table if we have a valid DI Number and CDRL Subtitle
+            # This ensures that lines that are purely comments (without a proper DI Number or subtitle)
+            # will not be inserted.
+            if not di_num or not cdrl_subtitle:
+                # Skip this match if it doesn't contain the required info
+                continue
+
             # Insert the item into the data display table
-            item_id = self.table.insert("", "end", values=(obj_id, di_num, cdrl_subtitle, object_status,
-                                                           contractor_status, government_status))
+            item_id = self.table.insert(
+                "", "end",
+                values=(obj_id, di_num, cdrl_subtitle, object_status, contractor_status, government_status)
+            )
 
             # Get existing comment if any
             if obj_id in comments_dict:
@@ -2717,45 +2840,16 @@ class RTVMApp:
             self.comment_table.insert("", "end", values=(comment_text,))
 
             # Apply conditional formatting
-            self.apply_conditional_formatting(
-                item_id, contractor_status, government_status)
+            self.apply_conditional_formatting(item_id, contractor_status, government_status)
 
             # Check if Object Status is "DEPRECIATED"
             if object_status.upper() == "DEPRECIATED":
-                messagebox.showwarning("Warning",
-                                       "The Object Status is marked as DEPRECIATED \n A CDRL that the government concurs should be removed from the SPEC line item and is pending the full removal of the object from DOORs. No DLOC edits will be accepted for a VERI-DOC in this status.")
-
-            count += 1  # Increment the counter
-
-        # Adjust the table height based on the number of rows
-        self.adjust_table_height(count)
-
-
-        count = 0  # Counter for the number of rows
-        for match in matches:
-            obj_id = match.group('obj_id')
-            veridoc_num = match.group('veridoc_num')
-            di_num = match.group('di_num')
-            cdrl_subtitle = match.group('cdrl_subtitle').strip()
-            object_status = match.group('object_status').strip()
-            contractor_status = match.group('contractor_status').strip()
-            government_status = match.group('government_status').strip()
-
-            # Insert the item into the data display table
-            item_id = self.table.insert("", "end", values=(obj_id, di_num, cdrl_subtitle, object_status,
-                                                           contractor_status, government_status))
-            # Prepopulate the comment with the Object Identifier followed by " - "
-            comment_initial_text = f"{obj_id} - "
-            self.comment_table.insert("", "end", values=(comment_initial_text,))
-
-            # Apply conditional formatting
-            self.apply_conditional_formatting(
-                item_id, contractor_status, government_status)
-
-            # Check if Object Status is "DEPRECIATED"
-            if object_status.upper() == "DEPRECIATED":
-                messagebox.showwarning("Warning",
-                                       "The Object Status is marked as DEPRECIATED \n A CDRL that the government concurs should be removed from the SPEC line item and is pending the full removal of the object from DOORs. No DLOC edits will be accepted for a VERI-DOC in this status.")
+                messagebox.showwarning(
+                    "Warning",
+                    "The Object Status is marked as DEPRECIATED.\nA CDRL that the government concurs should be removed "
+                    "is pending the full removal of the object from DOORs. No DLOC edits will be accepted for a "
+                    "VERI-DOC in this status."
+                )
 
             count += 1  # Increment the counter
 
@@ -3207,17 +3301,15 @@ class RTVMApp:
             messagebox.showerror("Error", "Please upload an Excel file first.")
             return
 
-        # Create a new window
         self.pie_chart_window = tk.Toplevel(self.root)
         self.pie_chart_window.title("Pie Charts")
 
-        # Create filter frame
+        # Create filter frame (this stays the same)
         filter_frame = tk.Frame(self.pie_chart_window)
         filter_frame.pack(side=tk.TOP, fill=tk.X)
 
         # Object Status Filter
-        object_label = tk.Label(filter_frame, text="Object Status")
-        object_label.pack(side=tk.LEFT, padx=5, pady=5)
+        tk.Label(filter_frame, text="Object Status").pack(side=tk.LEFT, padx=5, pady=5)
         self.pie_object_status_var = tk.StringVar()
         self.pie_object_status_dropdown = ttk.Combobox(
             filter_frame,
@@ -3227,11 +3319,10 @@ class RTVMApp:
             width=15
         )
         self.pie_object_status_dropdown.pack(side=tk.LEFT)
-        self.pie_object_status_var.set("Any")  # Default value
+        self.pie_object_status_var.set("Any")
 
         # Contractor Assessed Status Filter
-        contractor_label = tk.Label(filter_frame, text="Contractor Assessed Status")
-        contractor_label.pack(side=tk.LEFT, padx=5, pady=5)
+        tk.Label(filter_frame, text="Contractor Assessed Status").pack(side=tk.LEFT, padx=5, pady=5)
         self.pie_contractor_status_var = tk.StringVar()
         self.pie_contractor_status_dropdown = ttk.Combobox(
             filter_frame,
@@ -3241,11 +3332,10 @@ class RTVMApp:
             width=15
         )
         self.pie_contractor_status_dropdown.pack(side=tk.LEFT)
-        self.pie_contractor_status_var.set("Any")  # Default value
+        self.pie_contractor_status_var.set("Any")
 
         # Government Assessed Status Filter
-        government_label = tk.Label(filter_frame, text="Government Assessed Status")
-        government_label.pack(side=tk.LEFT, padx=5, pady=5)
+        tk.Label(filter_frame, text="Government Assessed Status").pack(side=tk.LEFT, padx=5, pady=5)
         self.pie_government_status_var = tk.StringVar()
         self.pie_government_status_dropdown = ttk.Combobox(
             filter_frame,
@@ -3255,56 +3345,56 @@ class RTVMApp:
             width=15
         )
         self.pie_government_status_dropdown.pack(side=tk.LEFT)
-        self.pie_government_status_var.set("Any")  # Default value
+        self.pie_government_status_var.set("Any")
 
         # Update Charts Button
-        update_button = tk.Button(filter_frame, text="Update Charts", command=self.update_pie_charts)
-        update_button.pack(side=tk.LEFT, padx=10)
+        tk.Button(filter_frame, text="Update Charts", command=self.update_pie_charts).pack(side=tk.LEFT, padx=10)
 
-        # Create frames for the pie charts
+        # Now create a frame to hold four charts in a 2×2 grid
         charts_frame = tk.Frame(self.pie_chart_window)
         charts_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-        # Object Status Pie Chart
+        # Create the four figures and embed them using grid.
         self.object_status_fig = plt.Figure(figsize=(4, 4), dpi=100)
         self.object_status_canvas = FigureCanvasTkAgg(self.object_status_fig, charts_frame)
-        self.object_status_canvas.get_tk_widget().pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.object_status_canvas.get_tk_widget().grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
 
-        # Contractor Assessed Status Pie Chart
         self.contractor_status_fig = plt.Figure(figsize=(4, 4), dpi=100)
         self.contractor_status_canvas = FigureCanvasTkAgg(self.contractor_status_fig, charts_frame)
-        self.contractor_status_canvas.get_tk_widget().pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.contractor_status_canvas.get_tk_widget().grid(row=0, column=1, padx=5, pady=5, sticky="nsew")
 
-        # Government Assessed Status Pie Chart
         self.government_status_fig = plt.Figure(figsize=(4, 4), dpi=100)
         self.government_status_canvas = FigureCanvasTkAgg(self.government_status_fig, charts_frame)
-        self.government_status_canvas.get_tk_widget().pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.government_status_canvas.get_tk_widget().grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
 
-        # Create a frame for the counts table
+        self.gov_req_status_fig = plt.Figure(figsize=(4, 4), dpi=100)
+        self.gov_req_status_canvas = FigureCanvasTkAgg(self.gov_req_status_fig, charts_frame)
+        self.gov_req_status_canvas.get_tk_widget().grid(row=1, column=1, padx=5, pady=5, sticky="nsew")
+
+        # Optionally configure the grid so cells expand equally.
+        charts_frame.columnconfigure(0, weight=1)
+        charts_frame.columnconfigure(1, weight=1)
+        charts_frame.rowconfigure(0, weight=1)
+        charts_frame.rowconfigure(1, weight=1)
+
+        # Create a frame for the counts table (same as before)
         counts_frame = tk.Frame(self.pie_chart_window)
         counts_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-
-        # Create the counts table with an additional column for Total Count
         self.counts_table = ttk.Treeview(counts_frame, columns=("Status", "Count", "Total Count"), show="headings")
         self.counts_table.heading("Status", text="Status")
         self.counts_table.heading("Count", text="Count")
         self.counts_table.heading("Total Count", text="Total Count")
         self.counts_table.pack(fill=tk.BOTH, expand=True)
 
-        # Compute total counts before updating pie charts
         self.compute_total_counts()
-
-        # Initially update the pie charts and counts table
         self.update_pie_charts()
 
-
     def update_pie_charts(self):
-        # Get selected statuses
+        # Get the selected filters
         selected_object_status = self.pie_object_status_var.get()
         selected_contractor_status = self.pie_contractor_status_var.get()
         selected_government_status = self.pie_government_status_var.get()
 
-        # Treat "Any" as no filter
         if selected_object_status == "Any":
             selected_object_status = ''
         if selected_contractor_status == "Any":
@@ -3312,65 +3402,105 @@ class RTVMApp:
         if selected_government_status == "Any":
             selected_government_status = ''
 
-        # Filter the status data
+        # Filter the status data based on the selected filters (for the first three charts)
         filtered_items = []
         for item in self.status_data:
-            # Check if the statuses match
             object_match = True
             contractor_match = True
             government_match = True
-
             if selected_object_status:
                 object_match = (item['object_status'] == selected_object_status)
             if selected_contractor_status:
                 contractor_match = (item['contractor_status'] == selected_contractor_status)
             if selected_government_status:
                 government_match = (item['government_status'] == selected_government_status)
-
             if object_match and contractor_match and government_match:
                 filtered_items.append(item)
 
-        # Collect statuses from filtered items
         filtered_statuses = {
             'object_status': [item['object_status'] for item in filtered_items],
             'contractor_status': [item['contractor_status'] for item in filtered_items],
             'government_status': [item['government_status'] for item in filtered_items]
         }
 
-        # Generate pie charts
+        # Plot the first three charts using the filtered data
         self.plot_pie_chart(self.object_status_fig, filtered_statuses['object_status'], 'Object Status')
         self.plot_pie_chart(self.contractor_status_fig, filtered_statuses['contractor_status'], 'Contractor Assessed Status')
         self.plot_pie_chart(self.government_status_fig, filtered_statuses['government_status'], 'Government Assessed Status')
 
-        # Draw the canvases
+        # --- Now compute the per-requirement overall government status ---
+        # We will group by row index (each row is one requirement).
+        from collections import defaultdict, Counter
+        req_status = defaultdict(list)
+        for item in self.status_data:
+            row_idx = item['row_index']
+            status = item['government_status']
+            if isinstance(status, str):
+                req_status[row_idx].append(status.strip().lower())
+
+        # Define the order of precedence (lower number = higher precedence)
+        precedence = {"agree": 1, "disagree": 2, "pending review": 3, "awaiting input": 4}
+
+        overall_status_list = []
+        for row_idx, statuses in req_status.items():
+            overall = None
+            min_rank = float('inf')
+            for s in statuses:
+                rank = precedence.get(s, 100)  # default to a high rank if unknown
+                if rank < min_rank:
+                    min_rank = rank
+                    overall = s
+            if overall:
+                # Capitalize the first letter (so "agree" becomes "Agree", etc.)
+                overall_status_list.append(overall.capitalize())
+
+        # Plot the new pie chart using the overall status per requirement.
+        self.plot_pie_chart(self.gov_req_status_fig, overall_status_list, 'Government Assessed Status Per Requirement')
+
+        # Redraw all canvases
         self.object_status_canvas.draw()
         self.contractor_status_canvas.draw()
         self.government_status_canvas.draw()
+        self.gov_req_status_canvas.draw()
 
-        # Update the counts table
+        # Update counts table (using filtered_statuses as before)
         self.update_counts_table(filtered_statuses)
-
 
 
     def plot_pie_chart(self, fig, data_list, title):
         # Clear the figure
         fig.clear()
-
-        # Count the occurrences
         from collections import Counter
         counter = Counter(data_list)
         labels = list(counter.keys())
         sizes = list(counter.values())
 
-        # Handle empty data
+        # Define your desired color mapping:
+        status_color_map = {
+            'Agree': 'green',
+            'Disagree': 'red',
+            'Awaiting input': 'yellow',
+            'Pending eview': 'blue'
+        }
+
+        # We standardize each label by capitalizing it before checking the mapping.
+        colors = []
+        for label in labels:
+            label_cap = label.capitalize()
+            colors.append(status_color_map.get(label_cap, 'grey'))
+
+
+
+        # Handle the case of no data.
         if not sizes:
             labels = ['No Data']
             sizes = [1]
+            colors = ['lightgrey']
 
-        # Create pie chart
+        # Create the pie chart with the specified colors.
         ax = fig.add_subplot(111)
-        ax.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=140)
-        ax.axis('equal')  # Equal aspect ratio ensures that pie is drawn as a circle.
+        ax.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=140, colors=colors)
+        ax.axis('equal')
         ax.set_title(title)
 
     def update_counts_table(self, filtered_statuses):
@@ -3620,6 +3750,864 @@ class RTVMApp:
         # Save comments to Excel file immediately
         self.save_comments_to_excel()
         
+
+import io
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import Table, TableStyle
+from reportlab.lib import colors
+from textwrap import wrap
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+import os
+from datetime import datetime
+from textwrap import wrap
+
+
+class DisagreementManager:
+    def __init__(self, master, app, disagreement_items):
+        """
+        master: the parent window
+        app: the instance of RTVMApp
+        disagreement_items: list of items from self.status_data that match the criteria
+        """
+        self.master = master
+        self.app = app
+        self.disagreement_items = disagreement_items
+        self.current_index = 0
+        self.output_folder = None  # Folder where PDFs will be saved
+
+        # Make the window stay on top
+        self.master.attributes("-topmost", True)
+
+        # GUI layout
+        self.button_frame = tk.Frame(master)
+        self.button_frame.pack(side=tk.TOP, fill=tk.X)
+
+        self.up_button = tk.Button(self.button_frame, text="Up", command=self.prev_item)
+        self.up_button.pack(side=tk.LEFT, padx=5, pady=5)
+
+        self.down_button = tk.Button(self.button_frame, text="Down", command=self.next_item)
+        self.down_button.pack(side=tk.LEFT, padx=5, pady=5)
+
+        self.generate_pdf_button = tk.Button(self.button_frame, text="Generate PDF", command=self.generate_pdf_for_current)
+        self.generate_pdf_button.pack(side=tk.LEFT, padx=5, pady=5)
+
+        # New button to create all reports
+        self.create_all_button = tk.Button(self.button_frame, text="Create All Reports", command=self.create_all_reports)
+        self.create_all_button.pack(side=tk.LEFT, padx=5, pady=5)
+
+        self.select_folder_button = tk.Button(self.button_frame, text="Select Output Folder", command=self.select_output_folder)
+        self.select_folder_button.pack(side=tk.LEFT, padx=5, pady=5)
+
+        #Button to create the report in the format of an excel documetn. 
+        self.generate_xlsx_button = tk.Button(self.button_frame, text="Generate Excel", command=self.generate_excel_for_current)
+        self.generate_xlsx_button.pack(side=tk.LEFT, padx=5, pady=5)
+
+
+        # Frame for preview
+        self.preview_frame = tk.Frame(master)
+        self.preview_frame.pack(fill=tk.BOTH, expand=True)
+
+        # A text box to show preview
+        self.preview_text = tk.Text(self.preview_frame, wrap="word")
+        self.preview_text.pack(fill=tk.BOTH, expand=True)
+
+        self.show_item()
+
+    def select_output_folder(self):
+        folder = filedialog.askdirectory(title="Select Output Folder for PDFs")
+        if folder:
+            self.output_folder = folder
+            messagebox.showinfo("Folder Selected", f"PDFs will be saved to: {folder}")
+
+    def prev_item(self):
+        if self.current_index > 0:
+            self.current_index -= 1
+            self.show_item()
+
+    def next_item(self):
+        if self.current_index < len(self.disagreement_items) - 1:
+            self.current_index += 1
+            self.show_item()
+
+    def show_item(self):
+        # Clear the preview
+        self.preview_text.delete("1.0", tk.END)
+
+        # Get current row_index
+        item = self.disagreement_items[self.current_index]
+        row_index = item['row_index']
+
+        # Set current_row in the app and update UI so that extract_info() is called
+        self.app.current_row = row_index
+        self.app.update_ui_after_navigation()
+
+        # Now self.app.table contains all lines (agreements and disagreements) for this row
+        # Also self.app.spec_text_box, self.app.comment_table, etc. are updated
+
+        # For preview, we can just show the spec text and the lines we have in self.app.table.
+        spec_text = self.app.spec_text_box.get("1.0", tk.END).strip()
+        self.preview_text.insert(tk.END, "Specification Text:\n" + spec_text + "\n\n---\n\n")
+
+        # Insert DI Number Breakdown lines
+        self.preview_text.insert(tk.END, "DI Number Breakdown:\n")
+        for line_id in self.app.table.get_children():
+            values = self.app.table.item(line_id, 'values')
+            # Each line is a tuple like (VeriDoc, DI Number, CDRL Subtitle, Object Status, Contractor Status, Government Status)
+            self.preview_text.insert(tk.END, ", ".join(str(v) for v in values) + "\n")
+
+        self.preview_text.insert(tk.END, "\n---\n\nComments:\n")
+        # Insert comments
+        for c_id in self.app.comment_table.get_children():
+            c_values = self.app.comment_table.item(c_id, 'values')
+            if c_values:
+                self.preview_text.insert(tk.END, c_values[0] + "\n")
+
+
+
+### This creates the diagreement reports as an excel file. 
+
+    def generate_excel_for_current(self, show_popup=True):
+        """
+        Creates an Excel file (.xlsx) containing the same data that would normally go into the PDF.
+        """
+        # 1. Gather the same data as in generate_pdf_for_current
+        item = self.disagreement_items[self.current_index]
+        row_index = item['row_index']
+
+        # Update UI and load current row data
+        self.app.current_row = row_index
+        self.app.update_ui_after_navigation()
+
+        # DOORS SPEC ID
+        doors_spec_id = self.app.df.iloc[row_index, 0]
+        if pd.isna(doors_spec_id):
+            doors_spec_id = ""
+        elif not isinstance(doors_spec_id, str):
+            doors_spec_id = str(doors_spec_id)
+
+        # Spec text
+        spec_text = self.app.spec_text_box.get("1.0", "end").strip()
+
+        # Contractor Proposed Change Comment History (col 8)
+        contractor_history_content = ""
+        if len(self.app.df.columns) > 8:
+            val = self.app.df.iloc[row_index, 8]
+            if pd.isna(val):
+                val = ""
+            contractor_history_content = str(val)
+
+        # Government Adjudication Comment History (col 9)
+        gov_history_content = ""
+        if len(self.app.df.columns) > 9:
+            val = self.app.df.iloc[row_index, 9]
+            if pd.isna(val):
+                val = ""
+            gov_history_content = str(val)
+
+        # Table data from self.app.table
+        items = self.app.table.get_children()
+        breakdown_data = [
+            ["VeriDoc Number", "DI Number", "CDRL Subtitle", "Gov. Assessed Status"]
+        ]
+        for line_id in items:
+            values = self.app.table.item(line_id, 'values')
+            # (VeriDoc, DI Number, CDRL Subtitle, Object Status, Contractor Status, Government Status)
+            # We'll store relevant columns
+            breakdown_data.append([values[0], values[1], values[2], values[5]])
+
+        # Count how many are "agree" vs "disagree"
+        agree_count = 0
+        disagree_count = 0
+        for i in range(1, len(breakdown_data)):
+            gov_status = str(breakdown_data[i][3]).lower()
+            if gov_status == "agree":
+                agree_count += 1
+            elif gov_status == "disagree":
+                disagree_count += 1
+
+        # Extract specifically which lines are "disagree"
+        disagreement_rows = []
+        for i in range(1, len(breakdown_data)):
+            gov_status = str(breakdown_data[i][3]).lower()
+            if gov_status == "disagree":
+                disagreement_rows.append(breakdown_data[i])
+
+        # 2. Prepare an Excel workbook with openpyxl
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Disagreement Report"
+
+        # Basic styling references
+        bold_font = Font(bold=True)
+        center_align = Alignment(horizontal="center", vertical="center")
+        thin_border = Border(left=Side(style='thin'), 
+                             right=Side(style='thin'), 
+                             top=Side(style='thin'), 
+                             bottom=Side(style='thin'))
+
+        # 3. Fill some header info
+        current_dt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ws["A1"] = "Contract: 70Z02323D93270001"
+        ws["A2"] = f"Date/Time: {current_dt}"
+        ws["A3"] = ("Distribution Statement D: Distribution authorized to DHS/CG/DOD "
+                    "and their contractors only due to administrative or operational use.\n"
+                    "Other requests shall be referred to COMMANDANT (CG-9327).")
+        ws["A4"] = ("DESTRUCTION NOTICE: Destroy this document by any method that "
+                    "will prevent disclosure of contents or reconstruction of the document.")
+        for row in range(1, 5):
+            ws.row_dimensions[row].height = 30  # Make them a bit taller
+
+        # 4. Summary info table: DOORS SPEC, row, total agreements, disagreements
+        ws["A6"] = "DOORS SPEC ID"
+        ws["B6"] = "Excel Row"
+        ws["C6"] = "Total Agreements"
+        ws["D6"] = "Total Disagreements"
+
+        ws["A7"] = doors_spec_id
+        ws["B7"] = str(row_index + 2)  # +2 for Excel-based row counting
+        ws["C7"] = str(agree_count)
+        ws["D7"] = str(disagree_count)
+
+        for col in range(1, 5):
+            cell = ws.cell(row=6, column=col)
+            cell.font = bold_font
+            cell.alignment = center_align
+            cell.border = thin_border
+
+            cell2 = ws.cell(row=7, column=col)
+            cell2.border = thin_border
+
+        # 5. Write out the Specification Text
+        spec_start = 9
+        ws.cell(spec_start, 1, "Specification Text:")
+        ws.cell(spec_start, 1).font = bold_font
+        # Put the spec text in the next row
+        ws.cell(spec_start+1, 1, spec_text)
+        # Optionally wrap text
+        ws.cell(spec_start+1, 1).alignment = Alignment(wrap_text=True)
+
+        # 6. Comments
+        comment_start = spec_start + 3
+        ws.cell(comment_start, 1, "Contractor Proposed Change Comment History:")
+        ws.cell(comment_start, 1).font = bold_font
+
+        # We'll split by new lines and write each line in a new row
+        c_lines = contractor_history_content.strip().split('\n')
+        row_c = comment_start + 1
+        for cline in c_lines:
+            if not cline.strip() or '_____' in cline:
+                continue
+            ws.cell(row_c, 1, cline)
+            row_c += 1
+
+        # Then government
+        row_c += 2
+        ws.cell(row_c, 1, "Government Adjudication Comment History:")
+        ws.cell(row_c, 1).font = bold_font
+        row_c += 1
+        g_lines = gov_history_content.strip().split('\n')
+        for gline in g_lines:
+            if not gline.strip() or '_____' in gline:
+                continue
+            ws.cell(row_c, 1, gline)
+            row_c += 1
+
+        # 7. Breakdown table
+        # Let's put it under everything else
+        breakdown_start = row_c + 2
+        ws.cell(breakdown_start, 1, "Breakdown Data:")
+        ws.cell(breakdown_start, 1).font = bold_font
+        breakdown_start += 1
+
+        # Insert headers
+        for col_idx, header in enumerate(breakdown_data[0], start=1):
+            cell = ws.cell(breakdown_start, col_idx, header)
+            cell.font = bold_font
+            cell.alignment = center_align
+            cell.border = thin_border
+
+        # Insert data rows
+        for i in range(1, len(breakdown_data)):
+            row_data = breakdown_data[i]
+            row_num = breakdown_start + i
+            for col_idx, val in enumerate(row_data, start=1):
+                cell = ws.cell(row_num, col_idx, val)
+                cell.alignment = Alignment(wrap_text=True)
+                cell.border = thin_border
+            
+                # Simple color-coding if Government Status is "disagree" or "agree"
+                if col_idx == 4:  # Gov. Status
+                    if str(val).lower() == "disagree":
+                        cell.fill = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
+                        cell.font = Font(color="FFFFFF")  # White text
+                    elif str(val).lower() == "agree":
+                        cell.fill = PatternFill(start_color="00B050", end_color="00B050", fill_type="solid")
+                        cell.font = Font(color="FFFFFF")  # White text
+                    elif str(val).lower() == "pending review":
+                        cell.fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")  # Yellow
+                        cell.font = Font(color="000000")  # Black text
+
+        # 8. Disagreement Comments
+        disagree_section = breakdown_start + len(breakdown_data) + 2
+        ws.cell(disagree_section, 1, "Disagreement Comments:")
+        ws.cell(disagree_section, 1).font = bold_font
+        disagree_section += 1
+        if not disagreement_rows:
+            ws.cell(disagree_section, 1, "No items are marked as 'Disagree'.")
+            disagree_section += 1
+        else:
+            for drow in disagreement_rows:
+                # drow is something like [veridoc, di_num, cdrl_subtitle, gov_status]
+                veridoc = drow[0]
+                di_num = drow[1]
+
+                ws.cell(disagree_section, 1, f"VeriDoc: {veridoc}, DI Number: {di_num}")
+                disagree_section += 1
+
+                # Optionally see if you can find relevant lines in gov_lines
+                related_gov_lines = [gl for gl in g_lines if di_num in gl]
+                if related_gov_lines:
+                    for gl in related_gov_lines:
+                        ws.cell(disagree_section, 1, f"Gov comment: {gl}")
+                        disagree_section += 1
+                else:
+                    ws.cell(disagree_section, 1, "No specific government comment found for this line.")
+                    disagree_section += 1
+
+                disagree_section += 1  # Spacing
+
+        # 9. Optional "form fields" replaced with placeholders
+        # Excel doesn't have fillable forms in the same sense, but you can label cells
+        form_start = disagree_section + 2
+        ws.cell(form_start, 1, "PWG assigned to resolve disagreement:")
+        ws.cell(form_start, 2, "")  # user can fill in
+        form_start += 1
+
+        ws.cell(form_start, 1, "USCG POC assigned to resolve disagreement:")
+        ws.cell(form_start, 2, "")
+        form_start += 1
+
+        ws.cell(form_start, 1, "BIRDON POC assigned to resolve disagreement:")
+        ws.cell(form_start, 2, "")
+        form_start += 2
+
+        ws.cell(form_start, 1, "General Comments:")
+        ws.cell(form_start+1, 1, "Enter general comments in the cell below:")
+        form_start += 3
+
+        # 10. Finally, save the workbook
+        # Decide filename
+        filename = f"Disagreement Report - WCC-SPEC-{doors_spec_id}.xlsx"
+        # If user selected a folder
+        if self.output_folder:
+            xlsx_path = os.path.join(self.output_folder, filename)
+        else:
+            xlsx_path = filename
+
+        try:
+            wb.save(xlsx_path)
+            if show_popup:
+                from tkinter import messagebox
+                messagebox.showinfo("Excel Generated", f"Excel saved as {xlsx_path}")
+        except Exception as e:
+            if show_popup:
+                messagebox.showerror("Error", f"Failed to save Excel file:\n{e}")
+
+
+
+
+###This Creates the Diagreement report PDF's 
+
+    def generate_pdf_for_current(self, show_popup=True):
+        from datetime import datetime
+        import os
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.pagesizes import letter
+        from reportlab.platypus import Paragraph, Table, TableStyle
+        from reportlab.lib import colors
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.pdfbase import acroform
+        from textwrap import wrap
+        from tkinter import messagebox
+
+        # 1. Gather the same data as before
+        item = self.disagreement_items[self.current_index]
+        row_index = item['row_index']
+
+        # Update UI and load current row data
+        self.app.current_row = row_index
+        self.app.update_ui_after_navigation()
+
+        # Get DOORS SPEC ID
+        doors_spec_id = self.app.df.iloc[row_index, 0]
+        if pd.isna(doors_spec_id):
+            doors_spec_id = ""
+        elif not isinstance(doors_spec_id, str):
+            doors_spec_id = str(doors_spec_id)
+
+        # Get specification text
+        spec_text = self.app.spec_text_box.get("1.0", "end").strip()
+
+        # Contractor Proposed Change Comment History
+        contractor_history_content = ""
+        if len(self.app.df.columns) > 8:
+            val = self.app.df.iloc[row_index, 8]
+            if pd.isna(val):
+                val = ""
+            contractor_history_content = str(val)
+
+        # Government Adjudication Comment History
+        gov_history_content = ""
+        if len(self.app.df.columns) > 9:
+            val = self.app.df.iloc[row_index, 9]
+            if pd.isna(val):
+                val = ""
+            gov_history_content = str(val)
+
+        # Page setup
+        width, height = letter
+        left_margin = 72
+        right_margin = 72
+        top_margin = 50
+        bottom_margin = 72
+        usable_width = width - (left_margin + right_margin)
+
+        # Collect table data from self.app.table
+        items = self.app.table.get_children()
+        breakdown_data = [
+            ["VeriDoc Number", "DI Number", "CDRL Subtitle", "Government Assessed Status"]
+        ]
+        for line_id in items:
+            values = self.app.table.item(line_id, 'values')
+            # (VeriDoc, DI Number, CDRL Subtitle, Object Status, Contractor Status, Government Status)
+            breakdown_data.append([values[0], values[1], values[2], values[5]])
+
+        # Count agreements and disagreements
+        agree_count = 0
+        disagree_count = 0
+        for i in range(1, len(breakdown_data)):
+            gov_status = str(breakdown_data[i][3]).strip().lower()
+            if gov_status == "agree":
+                agree_count += 1
+            elif gov_status == "disagree":
+                disagree_count += 1
+
+        # Extract disagreeing items
+        disagreement_rows = []
+        for i in range(1, len(breakdown_data)):
+            gov_status = str(breakdown_data[i][3]).strip().lower()
+            if gov_status == "disagree":
+                disagreement_rows.append(breakdown_data[i])
+
+        # Prepare the PDF
+        filename = f"Disagreement Report - WCC-SPEC-{doors_spec_id}.pdf"
+        pdf_path = (
+            os.path.join(self.output_folder, filename) if self.output_folder else filename
+        )
+        c = canvas.Canvas(pdf_path, pagesize=letter)
+        form = acroform.AcroForm(c)
+
+        # Some helper styling
+        styles = getSampleStyleSheet()
+        styleN = styles["Normal"]
+
+        def wrap_text_to_pdf(c, text, x, y, max_width):
+            """Helper to wrap lines at a certain width."""
+            chars_per_line = int(max_width / 6)  # Approx. for 12-pt text
+            wrapped_lines = wrap(text, width=chars_per_line)
+            for wline in wrapped_lines:
+                if y < bottom_margin:
+                    c.showPage()
+                    c.setFont("Helvetica", 12)
+                    y = height - top_margin
+                c.drawString(x, y, wline)
+                y -= 14
+            return y
+
+        # Start writing content
+        c.setFont("Helvetica", 8)
+        y = height - top_margin
+        current_dt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        c.drawString(left_margin, y, f"Date/Time: {current_dt}")
+        y -= 10
+        c.drawString(left_margin, y, "Contract: 70Z02323D93270001")
+        y -= 10
+
+        distribution_text = (
+            "DISTRIBUTION STATEMENT D: DISTRIBUTION AUTHORIZED TO DHS/CG/DOD AND THEIR "
+            "CONTRACTORS ONLY DUE TO ADMINISTRATIVE OR OPERATIONAL USE (5 OCT 2022). "
+            "OTHER REQUESTS SHALL BE REFERRED TO COMMANDANT (CG-9327)."
+        )
+
+        destruction_text = (
+            "DESTRUCTION NOTICE: DESTROY THIS DOCUMENT BY ANY METHOD THAT WILL "
+            "PREVENT DISCLOSURE OF CONTENTS OR RECONSTRUCTION OF THE DOCUMENT."
+        )
+
+        # Wrap distribution text
+        y = wrap_text_to_pdf(c, distribution_text, left_margin, y, usable_width)
+        y -= 10
+        # Wrap destruction text
+        y = wrap_text_to_pdf(c, destruction_text, left_margin, y, usable_width)
+
+        # DOORS SPEC ID summary table
+        from reportlab.platypus import Table, TableStyle
+        from reportlab.lib import colors
+
+        id_table_data = [
+            ["DOORS SPEC ID", "Excel Row", "Total Agreements", "Total Disagreements"],
+            [doors_spec_id, str(row_index + 2), str(agree_count), str(disagree_count)],
+        ]
+
+        id_table = Table(id_table_data, colWidths=[130, 60, 100, 120])
+        id_style = TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("BOX", (0, 0), (-1, -1), 1, colors.black),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ]
+        )
+        id_table.setStyle(id_style)
+        w_id, h_id = id_table.wrap(usable_width, 50)
+
+        c.setFont("Helvetica", 12)
+        if y - h_id < bottom_margin:
+            c.showPage()
+            c.setFont("Helvetica", 12)
+            y = height - top_margin
+
+        id_table.drawOn(c, left_margin, y - h_id)
+        y = y - h_id - 30
+
+        # Specification Text
+        c.drawString(left_margin, y, "Specification Text:")
+        y -= 20
+        y = wrap_text_to_pdf(c, spec_text, left_margin, y, usable_width)
+
+        # ------------------------------
+        # Create a two-column "Comments" table for contractor vs. government
+        # ------------------------------
+        y -= 30
+        c.drawString(left_margin, y, "Comments:")
+        y -= 20
+
+        # Split lines and remove blank/underscore lines
+        contractor_lines = [
+            line.strip()
+            for line in contractor_history_content.split("\n")
+            if line.strip() and "_____" not in line
+        ]
+        gov_lines = [
+            line.strip()
+            for line in gov_history_content.split("\n")
+            if line.strip() and "_____" not in line
+        ]
+
+        comments_data = [
+            [
+                "Contractor Proposed Change Comment History",
+                "Government Adjudication Comment History",
+            ]
+        ]
+
+        max_len = max(len(contractor_lines), len(gov_lines))
+        for i in range(max_len):
+            c_text = contractor_lines[i] if i < len(contractor_lines) else ""
+            g_text = gov_lines[i] if i < len(gov_lines) else ""
+            # Wrap them as Paragraphs for safer text wrapping in the table
+            comments_data.append([Paragraph(c_text, styleN), Paragraph(g_text, styleN)])
+
+        # Build the table
+        comments_table = Table(comments_data, colWidths=[usable_width / 2, usable_width / 2])
+        comments_table_style = TableStyle(
+            [
+                ("BOX", (0, 0), (-1, -1), 1, colors.black),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+            ]
+        )
+        comments_table.setStyle(comments_table_style)
+
+        # Compute space needed, do page break if needed
+        w_comments, h_comments = comments_table.wrap(usable_width, y)
+        if y - h_comments < bottom_margin:
+            c.showPage()
+            c.setFont("Helvetica", 12)
+            y = height - top_margin
+        comments_table.drawOn(c, left_margin, y - h_comments)
+        y -= h_comments + 20
+
+        # Breakdown table
+        approx_char_width = 6
+        max_lengths = [0, 0, 0, 0]
+        for row in breakdown_data:
+            for j, val in enumerate(row):
+                length = len(str(val))
+                if length > max_lengths[j]:
+                    max_lengths[j] = length
+        column_widths = [length * approx_char_width for length in max_lengths]
+
+        # Cap the CDRL column at 200 px
+        if column_widths[2] > 200:
+            column_widths[2] = 200
+
+        # Convert the CDRL column to a Paragraph for wrapping
+        for i in range(1, len(breakdown_data)):
+            cdrl_text = breakdown_data[i][2]
+            breakdown_data[i][2] = Paragraph(cdrl_text, styleN)
+
+        t = Table(breakdown_data, colWidths=column_widths)
+        style = TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("BOX", (0, 0), (-1, -1), 1, colors.black),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ]
+        )
+
+        # Color-coding for Government Status
+        for i in range(1, len(breakdown_data)):
+            gov_status = str(breakdown_data[i][3]).strip().lower()
+            if gov_status == "disagree":
+                style.add("BACKGROUND", (3, i), (3, i), colors.red)
+                style.add("TEXTCOLOR", (3, i), (3, i), colors.white)
+            elif gov_status == "agree":
+                style.add("BACKGROUND", (3, i), (3, i), colors.green)
+                style.add("TEXTCOLOR", (3, i), (3, i), colors.white)
+            elif gov_status == "pending review":
+                style.add("BACKGROUND", (3, i), (3, i), colors.yellow)
+                style.add("TEXTCOLOR", (3, i), (3, i), colors.black)
+
+        t.setStyle(style)
+
+        w, h = t.wrap(usable_width, 400)
+        if y - h < bottom_margin:
+            c.showPage()
+            c.setFont("Helvetica", 12)
+            y = height - top_margin
+        t.drawOn(c, left_margin, y - h)
+        y = y - h - 60
+
+        # Disagreement Comments
+        if disagreement_rows:
+            c.drawString(left_margin, y, "Disagreement Comments:")
+            y -= 20
+
+            for d_row in disagreement_rows:
+                veridoc = str(d_row[0]).strip()
+                di_num = str(d_row[1]).strip()
+
+                if y < bottom_margin:
+                    c.showPage()
+                    c.setFont("Helvetica", 12)
+                    y = height - top_margin
+
+                c.line(left_margin, y, width - right_margin, y)  # horizontal line
+                y -= 10
+                c.drawString(left_margin, y, f"VeriDoc: {veridoc}")
+                y -= 14
+                c.drawString(left_margin, y, f"DI Number: {di_num}")
+                y -= (14 * 2)
+
+                if y < bottom_margin:
+                    c.showPage()
+                    c.setFont("Helvetica", 12)
+                    y = height - top_margin
+
+                c.drawString(left_margin, y, "Government Comments:")
+                y -= 14
+
+                # Filter relevant lines that mention this di_num
+                related_gov_lines = [gl for gl in gov_lines if di_num in gl]
+                if not related_gov_lines:
+                    c.setFillColor(colors.red)
+                    c.drawString(
+                        left_margin,
+                        y,
+                        "No specific government comments related to this item.",
+                    )
+                    c.setFillColor(colors.black)
+                    y -= 14
+                else:
+                    for gl in related_gov_lines:
+                        y = wrap_text_to_pdf(c, gl, left_margin, y, usable_width)
+        else:
+            # If no disagreements
+            c.drawString(left_margin, y, "No items are marked 'Disagree' in this row.")
+            y -= 20
+
+        # -----------------------------------------------------------------------
+        # General Comments text box
+        # -----------------------------------------------------------------------
+        single_line_height = 20
+        if y < 200:
+            c.showPage()
+            c.setFont("Helvetica", 12)
+            y = height - top_margin
+
+        c.drawString(left_margin, y, "General Comments:")
+        general_box_width = usable_width
+        general_box_height = 80
+        form.textfield(
+            name="generalComments",
+            tooltip="General Comments",
+            x=left_margin,
+            y=y - general_box_height,
+            width=general_box_width,
+            height=general_box_height,
+            borderStyle="inset",
+            borderWidth=1,
+            fillColor=colors.white,
+        )
+        y -= (general_box_height + 40)
+
+        # -----------------------------------------------------------------------
+        # Options for Birdon (title) + Three Checkboxes
+        # -----------------------------------------------------------------------
+        c.drawString(left_margin, y, "Options for Birdon")
+        y -= 20
+
+        # --- 1) Disagreement Not Clear...
+        c.drawString(left_margin, y, "Disagreement Not Clear Send to USCG for Clarification")
+        form.checkbox(
+            name="disagreementNotClear",
+            tooltip="Check if the disagreement is not clear and needs USCG clarification",
+            x=left_margin + 420,
+            y=y - 8,
+            size=12,
+            borderWidth=1,
+            checked=False,
+            buttonStyle="check",
+        )
+        y -= 20
+
+        # --- 2) Disagreement can be resolved...
+        c.drawString(
+            left_margin,
+            y,
+            "Disagreement can be resolved with updated locations flag for RTVM",
+        )
+        form.checkbox(
+            name="disagreementResolvedLocations",
+            tooltip="Check if the disagreement can be resolved with updated locations in RTVM",
+            x=left_margin + 420,
+            y=y - 8,
+            size=12,
+            borderWidth=1,
+            checked=False,
+            buttonStyle="check",
+        )
+        y -= 20
+
+        # --- 3) Disagreement can not be resolved...
+        c.drawString(left_margin, y, "Disagreement can not be resolved at this time")
+        form.checkbox(
+            name="disagreementNotResolved",
+            tooltip="Check if the disagreement cannot be resolved at this time",
+            x=left_margin + 420,
+            y=y - 8,
+            size=12,
+            borderWidth=1,
+            checked=False,
+            buttonStyle="check",
+        )
+        y -= 40
+
+        # -----------------------------------------------------------------------
+        # USCG Responce (title) + a text box
+        # -----------------------------------------------------------------------
+        c.drawString(left_margin, y, "USCG Responce:")
+        uscg_box_height = 60
+        form.textfield(
+            name="uscgResponceBox",
+            tooltip="Enter USCG Responce",
+            x=left_margin,
+            y=y - uscg_box_height,
+            width=usable_width,
+            height=uscg_box_height,
+            borderStyle="inset",
+            borderWidth=1,
+            fillColor=colors.white,
+        )
+        y -= (uscg_box_height + 40)
+
+        # -----------------------------------------------------------------------
+        # USCG Signature (approved to disregard disagreement) + Date of Resolution
+        # -----------------------------------------------------------------------
+        c.drawString(
+            left_margin, y, "USCG Signature (approved to disregard disagreement):"
+        )
+        form.textfield(
+            name="uscgSignature",
+            tooltip="USCG Signature",
+            x=left_margin + 364,
+            y=y - 12,
+            width=150,
+            height=single_line_height,
+            borderStyle="inset",
+            borderWidth=1,
+            fillColor=colors.white,
+        )
+        y -= 40
+
+        c.drawString(left_margin, y, "Date of Resolution:")
+        form.textfield(
+            name="resolutionDate",
+            tooltip="Date of Resolution",
+            x=left_margin + 228,
+            y=y - 12,
+            width=200,
+            height=single_line_height,
+            borderStyle="inset",
+            borderWidth=1,
+            fillColor=colors.white,
+        )
+        y -= 40
+
+        # End the page
+        c.showPage()
+        c.save()
+
+        if show_popup:
+            messagebox.showinfo("PDF Generated", f"PDF saved as {pdf_path}")
+
+
+
+
+
+    def wrap_text_to_pdf(self, c, text, x, y, max_width):
+        from textwrap import wrap
+        lines = wrap(text, width=80)
+        for line in lines:
+            c.drawString(x, y, line)
+            y -= 14
+        return y
+
+    def create_all_reports(self):
+        if not self.disagreement_items:
+            messagebox.showinfo("No Disagreements", "No disagreement items available.")
+            return
+
+        # When generating all reports, do not show the PDF generated popup each time.
+        for i in range(len(self.disagreement_items)):
+            self.current_index = i
+            self.generate_pdf_for_current(show_popup=False)
+
+        # After all are done, you can show a single message
+        messagebox.showinfo("All Reports Created", "All disagreement reports have been generated.")
+
+    #################################################################################################END END END ##########################################################
 
 if __name__ == "__main__":
     root = tk.Tk()
