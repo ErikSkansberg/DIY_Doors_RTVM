@@ -2523,28 +2523,29 @@ class RTVMApp:
             filetypes=[("Excel files", "*.xls;*.xlsx")])
         if file_path:
             try:
-                # Load the Excel file
+                # Load the main sheet (e.g. the default first sheet)
                 self.df = pd.read_excel(file_path)
+                # Also load the "VeriDOC Matrix View" sheet into matrix_df
+                self.matrix_df = pd.read_excel(file_path, sheet_name="VeriDOC Matrix View")
                 self.excel_file_path = file_path  # Store the file path
                 self.current_row = 0  # Reset to the first row
 
-                # Debugging output: Print column names
-                print(f"DataFrame columns: {self.df.columns.tolist()}")
+                # Debug output: Print column names of both DataFrames
+                print(f"Main DataFrame columns: {self.df.columns.tolist()}")
+                print(f"Matrix DataFrame columns: {self.matrix_df.columns.tolist()}")
 
-                # Process the DataFrame to extract statuses
+                # Process the main DataFrame to extract statuses
                 self.process_statuses()
 
-                # **Add this line to populate the progress bar table**
+                # Populate the progress bar table
                 self.populate_progress_table()
 
                 # Update the UI
                 self.update_ui_after_navigation()
                 self.row_indicator_var.set(f"Row: {self.current_row + 2}")
-                messagebox.showinfo(
-                    "Success", "Excel file loaded successfully.")
+                messagebox.showinfo("Success", "Excel file loaded successfully.")
             except Exception as e:
-                messagebox.showerror(
-                    "Error", f"Failed to load Excel file: {e}")
+                messagebox.showerror("Error", f"Failed to load Excel file: {e}")
 
 
     def process_statuses(self):
@@ -4052,33 +4053,60 @@ class DisagreementManager:
                         cell.font = Font(color="000000")  # Black text
 
         # 8. Disagreement Comments
-        disagree_section = breakdown_start + len(breakdown_data) + 2
-        ws.cell(disagree_section, 1, "Disagreement Comments:")
-        ws.cell(disagree_section, 1).font = bold_font
-        disagree_section += 1
-        if not disagreement_rows:
-            ws.cell(disagree_section, 1, "No items are marked as 'Disagree'.")
-            disagree_section += 1
-        else:
-            for drow in disagreement_rows:
-                # drow is something like [veridoc, di_num, cdrl_subtitle, gov_status]
-                veridoc = drow[0]
-                di_num = drow[1]
-
-                ws.cell(disagree_section, 1, f"VeriDoc: {veridoc}, DI Number: {di_num}")
-                disagree_section += 1
-
-                # Optionally see if you can find relevant lines in gov_lines
-                related_gov_lines = [gl for gl in g_lines if di_num in gl]
-                if related_gov_lines:
-                    for gl in related_gov_lines:
-                        ws.cell(disagree_section, 1, f"Gov comment: {gl}")
-                        disagree_section += 1
+        if disagreement_rows:
+            c.drawString(left_margin, y, "Disagreement Comments:")
+            y -= 20
+            for d_row in disagreement_rows:
+                veridoc = str(d_row[0]).strip()  # VeriDoc Number from breakdown data
+                di_num = str(d_row[1]).strip()
+                if y < bottom_margin:
+                    c.showPage()
+                    c.setFont("Helvetica", 12)
+                    y = height - top_margin
+                c.line(left_margin, y, width - right_margin, y)
+                y -= 10
+                c.drawString(left_margin, y, f"VeriDoc: {veridoc}")
+                y -= 14
+                c.drawString(left_margin, y, f"DI Number: {di_num}")
+                y -= 28
+                if y < bottom_margin:
+                    c.showPage()
+                    c.setFont("Helvetica", 12)
+                    y = height - top_margin
+                c.drawString(left_margin, y, "Government Comments:")
+                y -= 14
+                # First try to get the comment from the matrix view (cross-reference)
+                matrix_comment = self.get_government_status_comment(veridoc)
+                if matrix_comment:
+                    y = wrap_text_to_pdf(c, matrix_comment, left_margin, y, usable_width)
                 else:
-                    ws.cell(disagree_section, 1, "No specific government comment found for this line.")
-                    disagree_section += 1
-
-                disagree_section += 1  # Spacing
+                    # Fall back to filtering gov_lines from the main sheet (using DI Number)
+                    related_gov_lines = [gl for gl in gov_lines if di_num in gl]
+                    if not related_gov_lines:
+                        c.setFillColor(colors.red)
+                        c.drawString(left_margin, y, "No specific government comments related to this item.")
+                        c.setFillColor(colors.black)
+                        y -= 14
+                    else:
+                        for gl in related_gov_lines:
+                            y = wrap_text_to_pdf(c, gl, left_margin, y, usable_width)
+                # Add a Birdon Response Comments text field
+                y -= 10
+                c.drawString(left_margin, y, "Birdon Response Comments:")
+                y -= 14
+                # Create a text field of height 50 pixels; the name is made unique by appending the VeriDoc ID
+                form.textfield(
+                    name=f"birdonResponse_{veridoc}",
+                    tooltip="Birdon Response Comments",
+                    x=left_margin,
+                    y=y-50,
+                    width=usable_width,
+                    height=50,
+                    borderStyle="inset",
+                    borderWidth=1,
+                    fillColor=colors.white,
+                )
+                y -= 60  # Adjust y for spacing after the text field
 
         # 9. Optional "form fields" replaced with placeholders
         # Excel doesn't have fillable forms in the same sense, but you can label cells
@@ -4122,37 +4150,275 @@ class DisagreementManager:
 
 ###This Creates the Diagreement report PDF's 
 
+import os
+import re
+import time
+import tkinter as tk
+from tkinter import messagebox, filedialog
+from datetime import datetime
+import pandas as pd
+
+# ReportLab imports for PDF generation
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfbase import acroform
+from reportlab.lib import colors
+from reportlab.platypus import Paragraph, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet
+from textwrap import wrap
+
+class DisagreementManager:
+    def __init__(self, master, app, disagreement_items):
+        """
+        master: Toplevel window.
+        app: instance of the main application (which holds app.df, app.spec_text_box, and app.matrix_df).
+        disagreement_items: a list of dicts from app.status_data filtered to government_status == "Disagree".
+        """
+        self.master = master
+        self.app = app
+        self.disagreement_items = disagreement_items  # already filtered for "Disagree"
+        self.current_index = 0
+        self.output_folder = None  # User-selected output folder for PDFs
+
+        self.master.title("Disagreement Manager")
+
+        # Navigation Frame
+        nav_frame = tk.Frame(self.master)
+        nav_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
+        self.up_button = tk.Button(nav_frame, text="Up", command=self.prev_item)
+        self.up_button.pack(side=tk.LEFT, padx=5)
+        self.down_button = tk.Button(nav_frame, text="Down", command=self.next_item)
+        self.down_button.pack(side=tk.LEFT, padx=5)
+
+        # Resolution Options Frame (for pre-selection)
+        option_frame = tk.Frame(self.master)
+        option_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
+        tk.Label(option_frame, text="Select Resolution Option:").pack(side=tk.LEFT, padx=5)
+        self.resolution_option = tk.StringVar(value="B3.3")  # Default: Unsolvable
+        tk.Radiobutton(option_frame, text="B3.1 - Unclear (Send to USCG)", variable=self.resolution_option, value="B3.1").pack(side=tk.LEFT, padx=5)
+        tk.Radiobutton(option_frame, text="B3.2 - Resolvable (Update RTVM)", variable=self.resolution_option, value="B3.2").pack(side=tk.LEFT, padx=5)
+        tk.Radiobutton(option_frame, text="B3.3 - Unsolvable", variable=self.resolution_option, value="B3.3").pack(side=tk.LEFT, padx=5)
+
+        # Buttons for PDF generation and output folder
+        btn_frame = tk.Frame(self.master)
+        btn_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
+        self.generate_pdf_button = tk.Button(btn_frame, text="Generate PDF for Current Disagreement", command=self.generate_pdf_for_current)
+        self.generate_pdf_button.pack(side=tk.LEFT, padx=5)
+        self.set_output_folder_button = tk.Button(btn_frame, text="Set Output Folder", command=self.select_output_folder)
+        self.set_output_folder_button.pack(side=tk.LEFT, padx=5)
+
+        # Preview Area
+        preview_frame = tk.Frame(self.master)
+        preview_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.preview_text = tk.Text(preview_frame, wrap="word", height=15)
+        self.preview_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scroll = tk.Scrollbar(preview_frame, command=self.preview_text.yview)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.preview_text.config(yscrollcommand=scroll.set)
+
+        # Show the first disagreement item
+        self.show_item()
+
+    def prev_item(self):
+        if self.current_index > 0:
+            self.current_index -= 1
+            self.show_item()
+
+    def next_item(self):
+        if self.current_index < len(self.disagreement_items) - 1:
+            self.current_index += 1
+            self.show_item()
+
+    def show_item(self):
+        """
+        Updates the preview area with details from the current disagreement item.
+        Extracts the Detailed Location from the "Assigned Verification Documents" column.
+        """
+        self.preview_text.delete("1.0", tk.END)
+        item = self.disagreement_items[self.current_index]
+        row_idx = item.get('row_index')
+        if row_idx is None:
+            self.preview_text.insert(tk.END, "No row data available.")
+            return
+        try:
+            row = self.app.df.iloc[row_idx]
+        except Exception as e:
+            self.preview_text.insert(tk.END, f"Error retrieving row data: {e}")
+            return
+
+        preview = f"DOORS SPEC ID: {row.iloc[0]}\n"
+        preview += f"VeriDoc Number: {item.get('veridoc_number', 'N/A')}\n"
+        preview += f"DI Number: {item.get('di_number', 'N/A')}\n"
+        preview += f"Object Status: {item.get('object_status', 'N/A')}\n"
+        preview += f"Government Assessed Status: {item.get('government_status', 'N/A')}\n"
+        try:
+            assigned_docs = row["Assigned Verification Documents"]
+        except Exception:
+            assigned_docs = ""
+        detailed_location = self.extract_detailed_location(assigned_docs)
+        preview += f"Detailed Location: {detailed_location}\n"
+        self.preview_text.insert(tk.END, preview)
+
+    def extract_detailed_location(self, docs_text):
+        """
+        Given the text from the "Assigned Verification Documents" cell, split into blocks
+        (separated by lines of underscores) and return the 'Detailed Location' from the block
+        that has Government Assessed Status "Disagree". If the found location equals
+        "Awaiting Loc Information", it is used as a candidate.
+        """
+        if not docs_text or not isinstance(docs_text, str):
+            return "N/A"
+        blocks = docs_text.split("______________________")
+        candidate = None
+        for block in blocks:
+            block = block.strip()
+            if not block:
+                continue
+            m_gov = re.search(r'Government Assessed Status:\s*(.*)', block)
+            if m_gov:
+                gov_status = m_gov.group(1).strip()
+                if gov_status.lower() == "disagree":
+                    m_loc = re.search(r'Detailed Location:\s*(.*)', block)
+                    if m_loc:
+                        loc = m_loc.group(1).strip()
+                        if loc.lower() != "awaiting loc information" and loc:
+                            return loc
+                        else:
+                            candidate = loc
+        return candidate if candidate is not None else "N/A"
+
+    def select_output_folder(self):
+        folder = filedialog.askdirectory(title="Select Output Folder for PDFs")
+        if folder:
+            self.output_folder = folder
+            messagebox.showinfo("Output Folder Set", f"Output folder set to: {folder}")
+
+    def generate_tracking_number(self, item):
+        """
+        Uses the DOORS SPEC ID (from the first column) as the tracking number.
+        For example, if the DOORS SPEC ID is "WCC-SPEC-8", that string is returned.
+        """
+        row_idx = item.get('row_index')
+        if row_idx is not None:
+            try:
+                doors_spec = self.app.df.iloc[row_idx, 0]
+                return str(doors_spec)
+            except Exception as e:
+                return f"Tracking-{int(time.time())}"
+        else:
+            return f"Tracking-{int(time.time())}"
+
+    def get_swbs_group(self, detailed_location):
+        """
+        Determines the SWBS group based on the detailed location string.
+        Uses the provided mapping.
+        """
+        swbs_groups = {
+            'SWBS 000': [
+                '040-001', '042-001', '042-003', '042-005', '045-001',
+                '068-001', '068-002', '068-003', '070-001', '073-001',
+                '073-003', '073-006', '073-007', '073-008', '073-009',
+                '076-002', '077-001', '077-002', '083-002', '085-004',
+                '086-003', '088-001', '088-002', '088-005', '088-007',
+                '092-001', '096-004'
+            ],
+            'SWBS 100': [
+                '100-001', '100-002', '100-004', '100-006', '100-010',
+                '100-011', '100-012', '100-013'
+            ],
+            'SWBS 200': [
+                '200-001', '200-003', '233-001', '245-001', '245-002',
+                '245-003', '249-001', '249-002', '249-003', '249-004',
+                '259-001'
+            ],
+            'SWBS 202': ['202-012'],
+            'SWBS 300': [
+                '300-001', '300-002', '300-003', '300-006', '300-007',
+                '300-008', '300-009', '300-010', '300-011', '302-001',
+                '310-001', '320-003', '303-001'
+            ],
+            'SWBS 400': [
+                '400-001', '400-002', '400-003', '400-010', '400-011',
+                '402-001', '402-002', '405-001', '407-001', '428-001',
+                '432-001', '432-002', '435-001', '436-002', '440-001'
+            ],
+            'SWBS 500': [
+                '508-001', '555-001', '580-001', '580-004', '583-001',
+                '589-002', '593-002', '593-005','521-003'
+            ],
+            'SWBS 600': [
+                '602-001', '604-001', '634-001', '640-002'
+            ]
+        }
+        for swbs, codes in swbs_groups.items():
+            for code in codes:
+                if code in detailed_location:
+                    return swbs
+        return "SWBS Unknown"
+
+    def get_government_status_comment(self, veridoc_id):
+        """
+        Looks up the government comment for the given VeriDOC ID in the matrix view.
+        Assumes that the main app has a DataFrame app.matrix_df loaded from the
+        "VeriDOC Matrix View" sheet. This version normalizes the VeriDOC IDs and
+        column names to improve matching.
+        """
+        if hasattr(self.app, "matrix_df"):
+            # Make a copy and normalize column names (strip whitespace)
+            df = self.app.matrix_df.copy()
+            df.columns = [col.strip() for col in df.columns]
+            # Ensure that the "VERI-DOC ID" column is of string type and normalized
+            if "VERI-DOC ID" in df.columns:
+                df["VERI-DOC ID"] = df["VERI-DOC ID"].astype(str).str.strip().str.upper()
+            else:
+                return ""
+            # Normalize the input veridoc_id
+            veridoc_id_norm = veridoc_id.strip().upper()
+            match = df[df["VERI-DOC ID"] == veridoc_id_norm]
+            if not match.empty:
+                # Also, normalize the Government Status Comment History value.
+                comment = match.iloc[0].get("Government Status Comment History", "")
+                if isinstance(comment, str):
+                    return comment.strip()
+                else:
+                    return ""
+        return ""
+
     def generate_pdf_for_current(self, show_popup=True):
-        from datetime import datetime
-        import os
-        from reportlab.pdfgen import canvas
+        """
+        Generates a PDF disagreement report for the current disagreement item.
+        This version retains the formatting from your previous reports (distribution notice,
+        summary tables, specification text, comments tables, general comments field, and options)
+        and now cross-references the VeriDOC Matrix View (app.matrix_df) for government comments
+        when none are present in the main sheet.
+        The tracking number is based on the DOORS SPEC ID.
+        The PDF is saved directly into the output folder (if set).
+        """
         from reportlab.lib.pagesizes import letter
-        from reportlab.platypus import Paragraph, Table, TableStyle
         from reportlab.lib import colors
         from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.platypus import Paragraph, Table, TableStyle
         from reportlab.pdfbase import acroform
         from textwrap import wrap
         from tkinter import messagebox
 
-        # 1. Gather the same data as before
+        # 1. Gather data from the current disagreement item
         item = self.disagreement_items[self.current_index]
         row_index = item['row_index']
-
-        # Update UI and load current row data
         self.app.current_row = row_index
         self.app.update_ui_after_navigation()
 
-        # Get DOORS SPEC ID
+        # Get DOORS SPEC ID from first column
         doors_spec_id = self.app.df.iloc[row_index, 0]
         if pd.isna(doors_spec_id):
             doors_spec_id = ""
         elif not isinstance(doors_spec_id, str):
             doors_spec_id = str(doors_spec_id)
 
-        # Get specification text
+        # Specification text from the main sheet
         spec_text = self.app.spec_text_box.get("1.0", "end").strip()
 
-        # Contractor Proposed Change Comment History
+        # Contractor Proposed Change Comment History (column index 8)
         contractor_history_content = ""
         if len(self.app.df.columns) > 8:
             val = self.app.df.iloc[row_index, 8]
@@ -4160,7 +4426,7 @@ class DisagreementManager:
                 val = ""
             contractor_history_content = str(val)
 
-        # Government Adjudication Comment History
+        # Government Adjudication Comment History from the main sheet (column index 9)
         gov_history_content = ""
         if len(self.app.df.columns) > 9:
             val = self.app.df.iloc[row_index, 9]
@@ -4176,14 +4442,11 @@ class DisagreementManager:
         bottom_margin = 72
         usable_width = width - (left_margin + right_margin)
 
-        # Collect table data from self.app.table
-        items = self.app.table.get_children()
-        breakdown_data = [
-            ["VeriDoc Number", "DI Number", "CDRL Subtitle", "Government Assessed Status"]
-        ]
-        for line_id in items:
+        # Breakdown table data from the main table (app.table)
+        items_ids = self.app.table.get_children()
+        breakdown_data = [["VeriDoc Number", "DI Number", "CDRL Subtitle", "Government Assessed Status"]]
+        for line_id in items_ids:
             values = self.app.table.item(line_id, 'values')
-            # (VeriDoc, DI Number, CDRL Subtitle, Object Status, Contractor Status, Government Status)
             breakdown_data.append([values[0], values[1], values[2], values[5]])
 
         # Count agreements and disagreements
@@ -4196,28 +4459,27 @@ class DisagreementManager:
             elif gov_status == "disagree":
                 disagree_count += 1
 
-        # Extract disagreeing items
+        # Extract rows with disagreement from breakdown_data
         disagreement_rows = []
         for i in range(1, len(breakdown_data)):
-            gov_status = str(breakdown_data[i][3]).strip().lower()
-            if gov_status == "disagree":
+            if str(breakdown_data[i][3]).strip().lower() == "disagree":
                 disagreement_rows.append(breakdown_data[i])
 
-        # Prepare the PDF
-        filename = f"Disagreement Report - WCC-SPEC-{doors_spec_id}.pdf"
-        pdf_path = (
-            os.path.join(self.output_folder, filename) if self.output_folder else filename
-        )
+        # Determine tracking number and PDF filename
+        tracking_number = self.generate_tracking_number(item)
+        filename = f"Disagreement Report - WCC-SPEC-{tracking_number}.pdf"
+        if self.output_folder:
+            pdf_path = os.path.join(self.output_folder, filename)
+        else:
+            pdf_path = filename
+
         c = canvas.Canvas(pdf_path, pagesize=letter)
         form = acroform.AcroForm(c)
-
-        # Some helper styling
         styles = getSampleStyleSheet()
         styleN = styles["Normal"]
 
         def wrap_text_to_pdf(c, text, x, y, max_width):
-            """Helper to wrap lines at a certain width."""
-            chars_per_line = int(max_width / 6)  # Approx. for 12-pt text
+            chars_per_line = int(max_width / 6)  # Approximation for 12pt font
             wrapped_lines = wrap(text, width=chars_per_line)
             for wline in wrapped_lines:
                 if y < bottom_margin:
@@ -4228,7 +4490,7 @@ class DisagreementManager:
                 y -= 14
             return y
 
-        # Start writing content
+        # Write header information
         c.setFont("Helvetica", 8)
         y = height - top_margin
         current_dt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -4242,102 +4504,64 @@ class DisagreementManager:
             "CONTRACTORS ONLY DUE TO ADMINISTRATIVE OR OPERATIONAL USE (5 OCT 2022). "
             "OTHER REQUESTS SHALL BE REFERRED TO COMMANDANT (CG-9327)."
         )
-
         destruction_text = (
             "DESTRUCTION NOTICE: DESTROY THIS DOCUMENT BY ANY METHOD THAT WILL "
             "PREVENT DISCLOSURE OF CONTENTS OR RECONSTRUCTION OF THE DOCUMENT."
         )
-
-        # Wrap distribution text
         y = wrap_text_to_pdf(c, distribution_text, left_margin, y, usable_width)
         y -= 10
-        # Wrap destruction text
         y = wrap_text_to_pdf(c, destruction_text, left_margin, y, usable_width)
 
-        # DOORS SPEC ID summary table
-        from reportlab.platypus import Table, TableStyle
-        from reportlab.lib import colors
-
+        # DOORS SPEC ID Summary Table
         id_table_data = [
             ["DOORS SPEC ID", "Excel Row", "Total Agreements", "Total Disagreements"],
             [doors_spec_id, str(row_index + 2), str(agree_count), str(disagree_count)],
         ]
-
         id_table = Table(id_table_data, colWidths=[130, 60, 100, 120])
-        id_style = TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("BOX", (0, 0), (-1, -1), 1, colors.black),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ]
-        )
+        id_style = TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("BOX", (0, 0), (-1, -1), 1, colors.black),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ])
         id_table.setStyle(id_style)
         w_id, h_id = id_table.wrap(usable_width, 50)
-
         c.setFont("Helvetica", 12)
         if y - h_id < bottom_margin:
             c.showPage()
             c.setFont("Helvetica", 12)
             y = height - top_margin
-
         id_table.drawOn(c, left_margin, y - h_id)
         y = y - h_id - 30
 
-        # Specification Text
+        # Specification Text Section
         c.drawString(left_margin, y, "Specification Text:")
         y -= 20
         y = wrap_text_to_pdf(c, spec_text, left_margin, y, usable_width)
 
-        # ------------------------------
-        # Create a two-column "Comments" table for contractor vs. government
-        # ------------------------------
+        # Two-column Comments Table for Contractor vs. Government
         y -= 30
         c.drawString(left_margin, y, "Comments:")
         y -= 20
-
-        # Split lines and remove blank/underscore lines
-        contractor_lines = [
-            line.strip()
-            for line in contractor_history_content.split("\n")
-            if line.strip() and "_____" not in line
-        ]
-        gov_lines = [
-            line.strip()
-            for line in gov_history_content.split("\n")
-            if line.strip() and "_____" not in line
-        ]
-
-        comments_data = [
-            [
-                "Contractor Proposed Change Comment History",
-                "Government Adjudication Comment History",
-            ]
-        ]
-
+        contractor_lines = [line.strip() for line in contractor_history_content.split("\n") if line.strip() and "_____" not in line]
+        gov_lines = [line.strip() for line in gov_history_content.split("\n") if line.strip() and "_____" not in line]
+        comments_data = [["Contractor Proposed Change Comment History", "Government Adjudication Comment History"]]
         max_len = max(len(contractor_lines), len(gov_lines))
         for i in range(max_len):
             c_text = contractor_lines[i] if i < len(contractor_lines) else ""
             g_text = gov_lines[i] if i < len(gov_lines) else ""
-            # Wrap them as Paragraphs for safer text wrapping in the table
             comments_data.append([Paragraph(c_text, styleN), Paragraph(g_text, styleN)])
-
-        # Build the table
         comments_table = Table(comments_data, colWidths=[usable_width / 2, usable_width / 2])
-        comments_table_style = TableStyle(
-            [
-                ("BOX", (0, 0), (-1, -1), 1, colors.black),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-            ]
-        )
+        comments_table_style = TableStyle([
+            ("BOX", (0, 0), (-1, -1), 1, colors.black),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+        ])
         comments_table.setStyle(comments_table_style)
-
-        # Compute space needed, do page break if needed
         w_comments, h_comments = comments_table.wrap(usable_width, y)
         if y - h_comments < bottom_margin:
             c.showPage()
@@ -4346,37 +4570,28 @@ class DisagreementManager:
         comments_table.drawOn(c, left_margin, y - h_comments)
         y -= h_comments + 20
 
-        # Breakdown table
+        # Breakdown Table
         approx_char_width = 6
         max_lengths = [0, 0, 0, 0]
-        for row in breakdown_data:
-            for j, val in enumerate(row):
+        for row_val in breakdown_data:
+            for j, val in enumerate(row_val):
                 length = len(str(val))
                 if length > max_lengths[j]:
                     max_lengths[j] = length
         column_widths = [length * approx_char_width for length in max_lengths]
-
-        # Cap the CDRL column at 200 px
         if column_widths[2] > 200:
             column_widths[2] = 200
-
-        # Convert the CDRL column to a Paragraph for wrapping
         for i in range(1, len(breakdown_data)):
             cdrl_text = breakdown_data[i][2]
             breakdown_data[i][2] = Paragraph(cdrl_text, styleN)
-
         t = Table(breakdown_data, colWidths=column_widths)
-        style = TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("BOX", (0, 0), (-1, -1), 1, colors.black),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ]
-        )
-
-        # Color-coding for Government Status
+        style = TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("BOX", (0, 0), (-1, -1), 1, colors.black),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ])
         for i in range(1, len(breakdown_data)):
             gov_status = str(breakdown_data[i][3]).strip().lower()
             if gov_status == "disagree":
@@ -4388,9 +4603,7 @@ class DisagreementManager:
             elif gov_status == "pending review":
                 style.add("BACKGROUND", (3, i), (3, i), colors.yellow)
                 style.add("TEXTCOLOR", (3, i), (3, i), colors.black)
-
         t.setStyle(style)
-
         w, h = t.wrap(usable_width, 400)
         if y - h < bottom_margin:
             c.showPage()
@@ -4399,62 +4612,59 @@ class DisagreementManager:
         t.drawOn(c, left_margin, y - h)
         y = y - h - 60
 
-        # Disagreement Comments
+        # Disagreement Comments Section
         if disagreement_rows:
             c.drawString(left_margin, y, "Disagreement Comments:")
             y -= 20
-
             for d_row in disagreement_rows:
-                veridoc = str(d_row[0]).strip()
+                veridoc = str(d_row[0]).strip()  # VeriDoc Number from breakdown data
                 di_num = str(d_row[1]).strip()
-
                 if y < bottom_margin:
                     c.showPage()
                     c.setFont("Helvetica", 12)
                     y = height - top_margin
-
-                c.line(left_margin, y, width - right_margin, y)  # horizontal line
+                c.line(left_margin, y, width - right_margin, y)
                 y -= 10
                 c.drawString(left_margin, y, f"VeriDoc: {veridoc}")
                 y -= 14
                 c.drawString(left_margin, y, f"DI Number: {di_num}")
-                y -= (14 * 2)
-
+                y -= 28
                 if y < bottom_margin:
                     c.showPage()
                     c.setFont("Helvetica", 12)
                     y = height - top_margin
-
                 c.drawString(left_margin, y, "Government Comments:")
                 y -= 14
-
-                # Filter relevant lines that mention this di_num
-                related_gov_lines = [gl for gl in gov_lines if di_num in gl]
-                if not related_gov_lines:
-                    c.setFillColor(colors.red)
-                    c.drawString(
-                        left_margin,
-                        y,
-                        "No specific government comments related to this item.",
-                    )
-                    c.setFillColor(colors.black)
-                    y -= 14
+                # First try to get the comment from the matrix view (cross-reference)
+                matrix_comment = self.get_government_status_comment(veridoc)
+                if matrix_comment:
+                    y = wrap_text_to_pdf(c, matrix_comment, left_margin, y, usable_width)
                 else:
-                    for gl in related_gov_lines:
-                        y = wrap_text_to_pdf(c, gl, left_margin, y, usable_width)
+                    # Fall back to filtering gov_lines from the main sheet (using DI Number)
+                    related_gov_lines = [gl for gl in gov_lines if di_num in gl]
+                    if not related_gov_lines:
+                        c.setFillColor(colors.red)
+                        c.drawString(left_margin, y, "No specific government comments related to this item.")
+                        c.setFillColor(colors.black)
+                        y -= 14
+                    else:
+                        for gl in related_gov_lines:
+                            y = wrap_text_to_pdf(c, gl, left_margin, y, usable_width)
         else:
-            # If no disagreements
             c.drawString(left_margin, y, "No items are marked 'Disagree' in this row.")
             y -= 20
 
-        # -----------------------------------------------------------------------
-        # General Comments text box
-        # -----------------------------------------------------------------------
+
+        # General Comments Text Field
         single_line_height = 20
         if y < 200:
             c.showPage()
             c.setFont("Helvetica", 12)
             y = height - top_margin
+
+        # Draw a horizontal line above the General Comments section
+        c.line(left_margin, y, width - right_margin, y)
+        y -= 10  # Add a little space after the line
 
         c.drawString(left_margin, y, "General Comments:")
         general_box_width = usable_width
@@ -4472,14 +4682,10 @@ class DisagreementManager:
         )
         y -= (general_box_height + 40)
 
-        # -----------------------------------------------------------------------
-        # Options for Birdon (title) + Three Checkboxes
-        # -----------------------------------------------------------------------
+        # Options for Birdon (with checkboxes)
         c.drawString(left_margin, y, "Options for Birdon")
         y -= 20
-
-        # --- 1) Disagreement Not Clear...
-        c.drawString(left_margin, y, "Disagreement Not Clear Send to USCG for Clarification")
+        c.drawString(left_margin, y, "Disagreement Not Clear - Send to USCG for Clarification")
         form.checkbox(
             name="disagreementNotClear",
             tooltip="Check if the disagreement is not clear and needs USCG clarification",
@@ -4491,13 +4697,7 @@ class DisagreementManager:
             buttonStyle="check",
         )
         y -= 20
-
-        # --- 2) Disagreement can be resolved...
-        c.drawString(
-            left_margin,
-            y,
-            "Disagreement can be resolved with updated locations flag for RTVM",
-        )
+        c.drawString(left_margin, y, "Disagreement can be resolved with updated locations flag for RTVM")
         form.checkbox(
             name="disagreementResolvedLocations",
             tooltip="Check if the disagreement can be resolved with updated locations in RTVM",
@@ -4509,8 +4709,6 @@ class DisagreementManager:
             buttonStyle="check",
         )
         y -= 20
-
-        # --- 3) Disagreement can not be resolved...
         c.drawString(left_margin, y, "Disagreement can not be resolved at this time")
         form.checkbox(
             name="disagreementNotResolved",
@@ -4524,14 +4722,12 @@ class DisagreementManager:
         )
         y -= 40
 
-        # -----------------------------------------------------------------------
-        # USCG Responce (title) + a text box
-        # -----------------------------------------------------------------------
-        c.drawString(left_margin, y, "USCG Responce:")
+        # USCG Response text field
+        c.drawString(left_margin, y, "USCG Response:")
         uscg_box_height = 60
         form.textfield(
             name="uscgResponceBox",
-            tooltip="Enter USCG Responce",
+            tooltip="Enter USCG Response",
             x=left_margin,
             y=y - uscg_box_height,
             width=usable_width,
@@ -4542,12 +4738,8 @@ class DisagreementManager:
         )
         y -= (uscg_box_height + 40)
 
-        # -----------------------------------------------------------------------
-        # USCG Signature (approved to disregard disagreement) + Date of Resolution
-        # -----------------------------------------------------------------------
-        c.drawString(
-            left_margin, y, "USCG Signature (approved to disregard disagreement):"
-        )
+        # USCG Signature and Date of Resolution
+        c.drawString(left_margin, y, "USCG Signature (approved to disregard disagreement):")
         form.textfield(
             name="uscgSignature",
             tooltip="USCG Signature",
@@ -4560,7 +4752,6 @@ class DisagreementManager:
             fillColor=colors.white,
         )
         y -= 40
-
         c.drawString(left_margin, y, "Date of Resolution:")
         form.textfield(
             name="resolutionDate",
@@ -4575,19 +4766,13 @@ class DisagreementManager:
         )
         y -= 40
 
-        # End the page
         c.showPage()
         c.save()
 
         if show_popup:
             messagebox.showinfo("PDF Generated", f"PDF saved as {pdf_path}")
 
-
-
-
-
     def wrap_text_to_pdf(self, c, text, x, y, max_width):
-        from textwrap import wrap
         lines = wrap(text, width=80)
         for line in lines:
             c.drawString(x, y, line)
@@ -4598,14 +4783,12 @@ class DisagreementManager:
         if not self.disagreement_items:
             messagebox.showinfo("No Disagreements", "No disagreement items available.")
             return
-
-        # When generating all reports, do not show the PDF generated popup each time.
         for i in range(len(self.disagreement_items)):
             self.current_index = i
             self.generate_pdf_for_current(show_popup=False)
-
-        # After all are done, you can show a single message
         messagebox.showinfo("All Reports Created", "All disagreement reports have been generated.")
+
+
 
     #################################################################################################END END END ##########################################################
 
