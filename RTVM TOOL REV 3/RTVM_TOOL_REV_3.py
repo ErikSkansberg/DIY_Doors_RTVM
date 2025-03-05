@@ -279,51 +279,54 @@ class PatternDialog(tk.Toplevel):
         self.deletions.clear()
 
     def save_to_excel(self):
-        # Get the generated pattern
-        patterns = self.output_text.get("1.0", tk.END).strip()
-        if not patterns:
-            messagebox.showerror("Error", "No pattern generated to save.")
-            return
+            # Get the generated pattern
+            patterns = self.output_text.get("1.0", tk.END).strip()
+            if not patterns:
+                messagebox.showerror("Error", "No pattern generated to save.")
+                return
 
-        # Get existing content from cell G (column index 6) of the current row
-        existing_content = self.app.df.iloc[self.current_row, 6]
-        if pd.isna(existing_content):
-            existing_content = ""
-        elif not isinstance(existing_content, str):
-            existing_content = str(existing_content)
+            # Get existing content from cell G (column index 6) of the current row
+            existing_content = self.app.df.iloc[self.current_row, 6]
+            if pd.isna(existing_content):
+                existing_content = ""
+            elif not isinstance(existing_content, str):
+                existing_content = str(existing_content)
 
-        # Append the new patterns to the existing content
-        if existing_content.strip():
-            new_content = existing_content.strip() + "\n" + patterns
-        else:
-            new_content = patterns
+            # Append the new patterns to the existing content
+            if existing_content.strip():
+                new_content = existing_content.strip() + "\n" + patterns
+            else:
+                new_content = patterns
 
-        # Update the Excel file directly using openpyxl
-        from openpyxl import load_workbook
+            # Update the Excel file directly using openpyxl
+            from openpyxl import load_workbook
 
-        try:
-            # Load the workbook
-            wb = load_workbook(self.app.excel_file_path)
-            ws = wb.active  # You may need to select the correct sheet if there are multiple
+            try:
+                # Load the workbook
+                wb = load_workbook(self.app.excel_file_path)
+                ws = wb.active  # You may need to select the correct sheet if there are multiple
 
-            # Calculate the Excel row number (considering headers)
-            excel_row = self.current_row + 2  # Assuming header is on the first row
+                # Calculate the Excel row number (considering headers)
+                excel_row = self.current_row + 2  # Assuming header is on the first row
 
-            # Update the cell in column G (which is column index 7 in openpyxl)
-            ws.cell(row=excel_row, column=7, value=new_content)
+                # Update the cell in column G (which is column index 7 in openpyxl)
+                ws.cell(row=excel_row, column=7, value=new_content)
 
-            # Save the workbook
-            wb.save(self.app.excel_file_path)
+                # Save the workbook
+                wb.save(self.app.excel_file_path)
 
-            # Update the DataFrame in memory
-            self.app.df.iloc[self.current_row, 6] = new_content
+                # Update the DataFrame in memory
+                self.app.df.iloc[self.current_row, 6] = new_content
 
-            messagebox.showinfo("Success", "Pattern saved to Excel file successfully.")
-            # Update the Contractor Proposed Change Request Input table
-            self.app.update_proposed_changes_table()
+                messagebox.showinfo("Success", "Pattern saved to Excel file successfully.")
+                # Update the Contractor Proposed Change Request Input table
+                self.app.update_proposed_changes_table()
+            
+                # Close the pattern dialog window after successful save
+                self.destroy()
 
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to save to Excel file: {e}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save to Excel file: {e}")
 
 import threading
 class RTVMApp:
@@ -3272,8 +3275,131 @@ class RTVMApp:
             # Create a context menu
             menu = tk.Menu(self.root, tearoff=0)
             menu.add_command(
+                label="Edit Pattern", command=lambda: self.edit_proposed_change_row(row_id))
+            menu.add_command(
                 label="Delete Row and Save to Excel", command=lambda: self.delete_proposed_change_row(row_id))
             menu.post(event.x_root, event.y_root)
+            
+
+    def edit_proposed_change_row(self, row_id):
+        # Get the pattern from the selected row
+        item = self.proposed_changes_table.item(row_id)
+        pattern_to_edit = item['values'][0]
+    
+        if not pattern_to_edit:
+            messagebox.showerror("Error", "No pattern found in the selected row.")
+            return
+    
+        # Create edit dialog
+        edit_window = tk.Toplevel(self.root)
+        edit_window.title("Edit Pattern")
+        edit_window.geometry("800x400")
+        edit_window.transient(self.root)
+        edit_window.grab_set()  # Make the window modal
+    
+        # Add instructions
+        instruction_label = tk.Label(edit_window, text="Edit the pattern below:", anchor="w")
+        instruction_label.pack(fill="x", padx=10, pady=(10, 5))
+    
+        # Create text widget for editing
+        edit_text = tk.Text(edit_window, wrap="word", height=10, width=80)
+        edit_text.pack(fill="both", expand=True, padx=10, pady=5)
+        edit_text.insert("1.0", pattern_to_edit)
+    
+        # Create buttons frame
+        button_frame = tk.Frame(edit_window)
+        button_frame.pack(fill="x", padx=10, pady=10)
+    
+        # Function to save the changes
+        def save_changes():
+            new_pattern = edit_text.get("1.0", "end-1c").strip()  # Get text without trailing newline
+            if not new_pattern:
+                messagebox.showerror("Error", "Pattern cannot be empty.")
+                return
+            
+            # Get current content from Excel
+            content = self.df.iloc[self.current_row, 6]
+            if pd.isna(content):
+                content = ""
+            elif not isinstance(content, str):
+                content = str(content)
+            
+            # Split the content into lines
+            lines = content.strip().split('\n')
+        
+            # Find and replace the pattern
+            found = False
+            for i, line in enumerate(lines):
+                if line == pattern_to_edit:
+                    lines[i] = new_pattern
+                    found = True
+                    break
+                
+            if not found:
+                messagebox.showerror("Error", "Original pattern not found in the Excel data.")
+                return
+            
+            # Join the lines back
+            new_content = '\n'.join(lines)
+        
+            # Update the Excel file
+            try:
+                # Load the workbook
+                wb = load_workbook(self.excel_file_path)
+                ws = wb.active  # You may need to select the correct sheet if there are multiple
+            
+                # Calculate the Excel row number (considering headers)
+                excel_row = self.current_row + 2  # Assuming header is on the first row
+            
+                # Update the cell in column G (which is column index 7 in openpyxl)
+                ws.cell(row=excel_row, column=7, value=new_content)
+            
+                # Save the workbook
+                wb.save(self.excel_file_path)
+            
+                # Update the DataFrame in memory
+                self.df.iloc[self.current_row, 6] = new_content
+            
+                messagebox.showinfo("Success", "Pattern updated and saved to Excel file successfully.")
+            
+                # Update the table
+                self.update_proposed_changes_table()
+            
+                # Close the edit window
+                edit_window.destroy()
+            
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save to Excel file: {e}")
+    
+        # Add save and cancel buttons
+        save_button = tk.Button(button_frame, text="Save Changes", command=save_changes)
+        save_button.pack(side="left", padx=5)
+    
+        cancel_button = tk.Button(button_frame, text="Cancel", command=edit_window.destroy)
+        cancel_button.pack(side="left", padx=5)
+    
+        # Add pattern helper buttons to assist with common pattern types
+        helper_frame = tk.LabelFrame(edit_window, text="Pattern Helpers")
+        helper_frame.pack(fill="x", padx=10, pady=10)
+    
+        # Function to insert template pattern
+        def insert_template(template):
+            edit_text.delete("1.0", "end")
+            edit_text.insert("1.0", template)
+    
+        # Common patterns
+        patterns = [
+            ("ADD Pattern", "ADD;DI-XXX-XXX;Document Name, Page/Sheet XX, Plan View/Section YY;SAT"),
+            ("DEL Pattern", "DEL;WCC-VERI-DOC-XXXXX"),
+            ("Update Object", "WCC-VERI-DOC-XXXXX;Document Name, Page/Sheet XX, Plan View/Section YY;SAT")
+        ]
+    
+        # Create buttons for each pattern
+        for label, pattern in patterns:
+            button = tk.Button(helper_frame, text=label, command=lambda p=pattern: insert_template(p))
+            button.pack(side="left", padx=5, pady=5)
+
+
 
     def delete_proposed_change_row(self, row_id):
         # Get the pattern from the selected row
@@ -3848,58 +3974,91 @@ from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 import os
 from datetime import datetime
 from textwrap import wrap
-
+import queue
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 class DisagreementManager:
     def __init__(self, master, app, disagreement_items):
         """
-        master: the parent window
-        app: the instance of RTVMApp
-        disagreement_items: list of items from self.status_data that match the criteria
+        Initialize the Disagreement Manager with updated column headers.
         """
         self.master = master
         self.app = app
-        self.disagreement_items = disagreement_items
-        self.current_index = 0
-        self.output_folder = None  # Folder where PDFs will be saved
+        self.disagreement_items = disagreement_items  # Already filtered
+        self.output_folder = None   # To be set via "Select Database Location"
+        self.report_list = []       # To store info about each generated report
 
-        # Make the window stay on top
-        self.master.attributes("-topmost", True)
+        self.master.title("Disagreement Manager - Batch Reports")
+        self.master.geometry("800x600")
+        
+        # Top frame with buttons
+        top_frame = tk.Frame(self.master)
+        top_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
+        
+        self.db_button = tk.Button(top_frame, text="Select Database Location", command=self.select_output_folder)
+        self.db_button.pack(side=tk.LEFT, padx=5)
+        
+        self.create_reports_button = tk.Button(top_frame, text="B.1 Create Disagreement Reports", command=self.create_all_reports)
+        self.create_reports_button.pack(side=tk.LEFT, padx=5)
+        
+        self.refresh_button = tk.Button(top_frame, text="Refresh Reports", command=self.refresh_report_table)
+        self.refresh_button.pack(side=tk.LEFT, padx=5)
+        
+        # Table frame
+        table_frame = tk.Frame(self.master)
+        table_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Updated treeview with more meaningful column headers
+        self.report_tree = ttk.Treeview(table_frame, 
+                                        columns=("SpecID", "Button1", "Button2", "Button3", "Report_File"),
+                                        show="headings")
+        self.report_tree.heading("SpecID", text="Spec ID")
+        self.report_tree.heading("Button1", text="Not Clear")
+        self.report_tree.heading("Button2", text="Can Resolve")
+        self.report_tree.heading("Button3", text="Cannot Resolve")
+        self.report_tree.heading("Report_File", text="Report File")
+        
+        self.report_tree.column("SpecID", width=100)
+        self.report_tree.column("Button1", width=100)
+        self.report_tree.column("Button2", width=100)
+        self.report_tree.column("Button3", width=100)
+        self.report_tree.column("Report_File", width=300)
+        
+        self.report_tree.bind("<Double-1>", self.on_report_tree_double_click)
+        self.report_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.report_tree.yview)
+        self.report_tree.configure(yscroll=scrollbar.set)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.suppress_depreciated_warning = True
 
-        # GUI layout
-        self.button_frame = tk.Frame(master)
-        self.button_frame.pack(side=tk.TOP, fill=tk.X)
 
-        self.up_button = tk.Button(self.button_frame, text="Up", command=self.prev_item)
-        self.up_button.pack(side=tk.LEFT, padx=5, pady=5)
+    def read_pdf_fields(self, report):
+        """
+        Read fields from a single PDF report and handle potential errors
+        """
+        try:
+            pdf_path = report["Report_File"]
+            print(f"Reading fields from: {os.path.basename(pdf_path)}")
+        
+            fields = get_pdf_form_fields(pdf_path)
+        
+            # Get checkbox states
+            not_clear = "✓" if fields.get("disagreementNotClear", False) else ""
+            can_resolve = "✓" if fields.get("disagreementResolvedLocations", False) else ""
+            cannot_resolve = "✓" if fields.get("disagreementNotResolved", False) else ""
+        
+            # Log the fields for debugging
+            print(f"Fields for {os.path.basename(pdf_path)}: not_clear={not_clear}, can_resolve={can_resolve}, cannot_resolve={cannot_resolve}")
+        
+            return (report["SpecID"], not_clear, can_resolve, cannot_resolve, pdf_path)
+        except Exception as e:
+            print(f"Error reading PDF fields from {report['Report_File']}: {str(e)}")
+            # Return a default result rather than failing
+            return (report["SpecID"], "", "", "", report["Report_File"])
 
-        self.down_button = tk.Button(self.button_frame, text="Down", command=self.next_item)
-        self.down_button.pack(side=tk.LEFT, padx=5, pady=5)
-
-        self.generate_pdf_button = tk.Button(self.button_frame, text="Generate PDF", command=self.generate_pdf_for_current)
-        self.generate_pdf_button.pack(side=tk.LEFT, padx=5, pady=5)
-
-        # New button to create all reports
-        self.create_all_button = tk.Button(self.button_frame, text="Create All Reports", command=self.create_all_reports)
-        self.create_all_button.pack(side=tk.LEFT, padx=5, pady=5)
-
-        self.select_folder_button = tk.Button(self.button_frame, text="Select Output Folder", command=self.select_output_folder)
-        self.select_folder_button.pack(side=tk.LEFT, padx=5, pady=5)
-
-        #Button to create the report in the format of an excel documetn. 
-        self.generate_xlsx_button = tk.Button(self.button_frame, text="Generate Excel", command=self.generate_excel_for_current)
-        self.generate_xlsx_button.pack(side=tk.LEFT, padx=5, pady=5)
-
-
-        # Frame for preview
-        self.preview_frame = tk.Frame(master)
-        self.preview_frame.pack(fill=tk.BOTH, expand=True)
-
-        # A text box to show preview
-        self.preview_text = tk.Text(self.preview_frame, wrap="word")
-        self.preview_text.pack(fill=tk.BOTH, expand=True)
-
-        self.show_item()
 
     def select_output_folder(self):
         folder = filedialog.askdirectory(title="Select Output Folder for PDFs")
@@ -4254,27 +4413,82 @@ from textwrap import wrap
 def get_pdf_form_fields(pdf_path):
     """
     Reads a PDF file and returns a dictionary of form fields.
-    (This function strips any surrounding parentheses from field names/values.)
+    This enhanced version correctly handles checkbox states and provides better error handling.
     """
     fields = {}
     try:
-        pdf = PdfReader(pdf_path)
-        if pdf.Root.AcroForm and pdf.Root.AcroForm.Fields:
-            for field in pdf.Root.AcroForm.Fields:
-                if field.T:
+        # Open the PDF with error handling
+        pdf = None
+        try:
+            pdf = PdfReader(pdf_path)
+        except Exception as e:
+            print(f"Failed to open PDF {os.path.basename(pdf_path)}: {e}")
+            return fields  # Return empty fields dictionary if PDF can't be opened
+        
+        # Check if PDF has form fields
+        if not hasattr(pdf, 'Root') or not hasattr(pdf.Root, 'AcroForm') or not pdf.Root.AcroForm or not pdf.Root.AcroForm.Fields:
+            # No form fields in PDF
+            return fields
+        
+        # Process each field
+        for field in pdf.Root.AcroForm.Fields:
+            try:
+                # Get field name
+                name = ""
+                if hasattr(field, 'T'):
                     name = field.T.to_unicode().strip() if hasattr(field.T, 'to_unicode') else str(field.T).strip()
                     if name.startswith('(') and name.endswith(')'):
                         name = name[1:-1]
+                if not name:
+                    continue  # Skip fields with no name
+                
+                # Get field value based on field type
+                value = None
+                
+                # The appearance state often indicates checkbox status
+                checked = False
+                
+                # Check for checkbox by examining various properties
+                if hasattr(field, 'AS'):
+                    # AS property often indicates the appearance state for checkboxes
+                    appearance_state = field.AS
+                    if appearance_state and (str(appearance_state).strip() not in ['/Off', 'Off']):
+                        checked = True
+                
+                if hasattr(field, 'V'):
+                    # V property contains the value
+                    if field.V:
+                        # Convert to string and handle parentheses
+                        raw_value = field.V.to_unicode().strip() if hasattr(field.V, 'to_unicode') else str(field.V).strip()
+                        if raw_value.startswith('(') and raw_value.endswith(')'):
+                            raw_value = raw_value[1:-1]
+                        
+                        # Common patterns for checked checkboxes
+                        if raw_value in ['/Yes', 'Yes', 'On', '/On', 'True', '/True'] or raw_value == True:
+                            checked = True
+                            value = True
+                        elif raw_value in ['Off', '/Off', 'No', '/No', 'False', '/False'] or not raw_value:
+                            value = False
+                        else:
+                            # For non-checkbox fields, store the actual value
+                            value = raw_value
+                    else:
+                        value = False  # No value typically means unchecked for checkboxes
+                
+                # For checkboxes, use the checked flag
+                if name in ['disagreementNotClear', 'disagreementResolvedLocations', 'disagreementNotResolved']:
+                    fields[name] = checked
                 else:
-                    name = ""
-                value = ""
-                if field.V:
-                    value = field.V.to_unicode().strip() if hasattr(field.V, 'to_unicode') else str(field.V).strip()
-                    if value.startswith('(') and value.endswith(')'):
-                        value = value[1:-1]
-                fields[name] = value
+                    # For other fields, use the processed value
+                    fields[name] = value if value is not None else ""
+                    
+            except Exception as field_error:
+                print(f"Error processing field in {os.path.basename(pdf_path)}: {field_error}")
+                continue
+                
     except Exception as e:
-        print(f"Error reading PDF form fields from {pdf_path}: {e}")
+        print(f"Error reading form fields from {os.path.basename(pdf_path)}: {e}")
+    
     return fields
 
 class DisagreementManager:
@@ -4347,9 +4561,11 @@ class DisagreementManager:
                     except Exception as e:
                         messagebox.showerror("Error", f"Failed to open file: {e}")
 
+
     def refresh_report_table(self):
         """
         Scans the output folder for PDF disagreement reports and then updates the treeview.
+        Shows a progress dialog and provides detailed status updates.
         """
         print("Refresh button clicked – refreshing report table...")
         if not self.output_folder:
@@ -4357,31 +4573,229 @@ class DisagreementManager:
             messagebox.showerror("Error", "Please select a database folder first.")
             return
 
-        # First, clear the treeview.
+        # Create progress dialog
+        progress_window = tk.Toplevel(self.master)
+        progress_window.title("Refreshing Reports")
+        progress_window.geometry("400x150")
+        progress_window.transient(self.master)
+        progress_window.grab_set()  # Make the window modal
+    
+        # Center the window
+        progress_window.update_idletasks()
+        width = progress_window.winfo_width()
+        height = progress_window.winfo_height()
+        x = (progress_window.winfo_screenwidth() - width) // 2
+        y = (progress_window.winfo_screenheight() - height) // 2
+        progress_window.geometry(f"{width}x{height}+{x}+{y}")
+    
+        # Progress status label
+        status_var = tk.StringVar(value="Scanning for PDF files...")
+        status_label = tk.Label(progress_window, textvariable=status_var)
+        status_label.pack(pady=(20, 10))
+    
+        # Progress bar
+        progress_var = tk.DoubleVar()
+        progress_bar = ttk.Progressbar(progress_window, variable=progress_var, maximum=100, length=350)
+        progress_bar.pack(pady=10, padx=20)
+    
+        # Detail label
+        detail_var = tk.StringVar(value="Finding PDF files...")
+        detail_label = tk.Label(progress_window, textvariable=detail_var, font=("Helvetica", 9))
+        detail_label.pack(pady=10)
+    
+        # First, clear the treeview
         for child in self.report_tree.get_children():
             self.report_tree.delete(child)
+    
+        # Reset report list
+        self.report_list = []
+
+        # Use a queue for thread-safe communication
+        result_queue = queue.Queue()
+    
+        def scan_directory():
+            """Background thread function to scan for PDF files"""
+            try:
+                report_files = []
+                total_files_scanned = 0
+                pdf_files_found = 0
+            
+                # Get all files in directory tree
+                all_files = []
+                for root_dir, dirs, files in os.walk(self.output_folder):
+                    for file in files:
+                        all_files.append((root_dir, file))
+            
+                total_files = len(all_files)
+                print(f"Total files found in directory: {total_files}")
+            
+                # Process the files
+                for root_dir, file in all_files:
+                    total_files_scanned += 1
+                    # Update progress approximately every 20 files or on last file
+                    if total_files_scanned % 20 == 0 or total_files_scanned == total_files:
+                        result_queue.put(('progress', (total_files_scanned, total_files, f"Scanning file {total_files_scanned} of {total_files}")))
+                
+                    # Check if it's a disagreement report PDF
+                    if file.endswith(".pdf") and "Disagreement Report - WCC-SPEC-" in file:
+                        pdf_files_found += 1
+                        print(f"Found report: {file}")
+                        result_queue.put(('detail', f"Found report: {file}"))
+                    
+                        # Extract the SPEC ID
+                        m = re.search(r"Disagreement Report - (WCC-SPEC-[^.]+)\.pdf", file)
+                        if m:
+                            spec_id = m.group(1)
+                        else:
+                            spec_id = file
+                    
+                        file_path = os.path.join(root_dir, file)
+                        report_files.append({
+                            "SpecID": spec_id,
+                            "Report_File": file_path
+                        })
+            
+                # Signal completion of scan
+                print(f"Scan complete. Found {pdf_files_found} PDF report files.")
+                result_queue.put(('scan_complete', (pdf_files_found, report_files)))
+            except Exception as e:
+                print(f"Error scanning directory: {str(e)}")
+                result_queue.put(('error', f"Error scanning directory: {str(e)}"))
+    
+        def process_fields(report_files):
+            """Process the PDF fields in batches for better progress feedback"""
+            try:
+                total_files = len(report_files)
+                print(f"Processing {total_files} PDF files")
+                self.report_list = report_files
+                result_queue.put(('status', f"Reading form fields from {total_files} PDFs..."))
+            
+                processed_results = []
+                files_processed = 0
+                errors = 0
+            
+                # Process in smaller batches for more frequent updates
+                batch_size = 5  # Smaller batch size for better progress updates
+                batches = [report_files[i:i + batch_size] for i in range(0, len(report_files), batch_size)]
+            
+                for batch_idx, batch in enumerate(batches):
+                    batch_results = []
+                    print(f"Processing batch {batch_idx+1}/{len(batches)}")
+                
+                    with ThreadPoolExecutor(max_workers=batch_size) as executor:
+                        futures = [executor.submit(self.read_pdf_fields, report) for report in batch]
+                    
+                        for future in as_completed(futures):
+                            files_processed += 1
+                            progress_percent = files_processed / total_files * 100
+                            result_queue.put(('progress', (files_processed, total_files, f"Processing file {files_processed} of {total_files}")))
+                        
+                            try:
+                                result = future.result(timeout=5)  # Timeout after 5 seconds
+                                print(f"Successfully processed PDF: {files_processed}")
+                                batch_results.append(result)
+                            except TimeoutError:
+                                errors += 1
+                                print(f"Timeout reading PDF #{files_processed}")
+                                result_queue.put(('detail', f"Timeout reading PDF #{files_processed}"))
+                            except Exception as e:
+                                errors += 1
+                                print(f"Error reading PDF #{files_processed}: {str(e)}")
+                                result_queue.put(('detail', f"Error reading PDF #{files_processed}: {str(e)[:50]}..."))
+                
+                    processed_results.extend(batch_results)
+                
+                    # Update status periodically
+                    if batch_idx % 2 == 0 or batch_idx == len(batches) - 1:
+                        result_queue.put(('status', f"Processed {files_processed}/{total_files} PDFs ({errors} errors)"))
+            
+                # Signal completion with final results
+                print(f"PDF processing complete. {len(processed_results)} processed with {errors} errors.")
+                result_queue.put(('complete', (processed_results, errors)))
         
-        count = 0
-        # Walk the folder and collect report file paths.
-        for root_dir, dirs, files in os.walk(self.output_folder):
-            for file in files:
-                if file.endswith(".pdf") and "Disagreement Report - WCC-SPEC-" in file:
-                    m = re.search(r"Disagreement Report - (WCC-SPEC-[^.]+)\.pdf", file)
-                    if m:
-                        spec_id = m.group(1)
-                    else:
-                        spec_id = file
-                    file_path = os.path.join(root_dir, file)
-                    print(f"Found report file: {file_path}")
-                    # For each file, add an entry to self.report_list.
-                    self.report_list.append({
-                        "SpecID": spec_id,
-                        "Report_File": file_path
-                    })
-                    count += 1
-        print(f"Total report files found: {count}")
-        # Now update the treeview (this call will process all PDFs concurrently)
-        self.update_report_table()
+            except Exception as e:
+                print(f"Error in process_fields: {str(e)}")
+                result_queue.put(('error', f"Error processing PDF fields: {str(e)}"))
+    
+        def update_progress():
+            """Update the progress dialog with queue messages"""
+            try:
+                # Check if there's a message in the queue
+                try:
+                    message_type, data = result_queue.get_nowait()
+                
+                    if message_type == 'progress':
+                        current, total, detail_text = data
+                        progress_var.set((current / total) * 100 if total > 0 else 0)
+                        detail_var.set(detail_text)
+                        print(f"Progress update: {detail_text}")
+                
+                    elif message_type == 'status':
+                        status_var.set(data)
+                        print(f"Status update: {data}")
+                
+                    elif message_type == 'detail':
+                        detail_var.set(data)
+                        print(f"Detail update: {data}")
+                
+                    elif message_type == 'scan_complete':
+                        pdf_count, report_files = data
+                        print(f"Scan phase complete. Found {pdf_count} PDFs. Starting processing phase.")
+                        status_var.set(f"Found {pdf_count} reports. Processing form fields...")
+                        progress_var.set(0)  # Reset progress for next phase
+                    
+                        # If no PDFs found, we're done
+                        if pdf_count == 0:
+                            messagebox.showinfo("No Reports", "No PDF reports were found in the selected folder.")
+                            progress_window.destroy()
+                            return
+                    
+                        # Start processing PDF fields in a new thread
+                        processing_thread = threading.Thread(target=process_fields, args=(report_files,), daemon=True)
+                        processing_thread.start()
+                
+                    elif message_type == 'complete':
+                        results, error_count = data
+                        progress_var.set(100)  # Ensure progress bar shows 100%
+                        status_var.set(f"Completed with {error_count} errors")
+                        detail_var.set(f"Refreshing display with {len(results)} reports...")
+                        print(f"Processing complete. {len(results)} reports loaded, {error_count} errors.")
+                    
+                        # Update the treeview with results
+                        for item in results:
+                            self.report_tree.insert("", "end", values=item)
+                    
+                        # Close the progress window after a short delay
+                        progress_window.after(1000, progress_window.destroy)
+                        return  # Exit the update loop
+                
+                    elif message_type == 'error':
+                        error_msg = data
+                        status_var.set("Error occurred")
+                        detail_var.set(error_msg)
+                        print(f"ERROR: {error_msg}")
+                        # Allow window to stay open a bit longer to show the error
+                        progress_window.after(3000, progress_window.destroy)
+                        return  # Exit the update loop
+                
+                except queue.Empty:
+                    # Queue is empty, no messages to process
+                    pass
+                
+                # Schedule another check after a short delay
+                progress_window.after(100, update_progress)
+            
+            except Exception as e:
+                print(f"Error in update_progress: {str(e)}")
+                messagebox.showerror("Error", f"An error occurred updating progress: {str(e)}")
+                progress_window.destroy()
+    
+        # Start the background scanning thread
+        scanning_thread = threading.Thread(target=scan_directory, daemon=True)
+        scanning_thread.start()
+    
+        # Start the progress update loop after a short delay
+        progress_window.after(100, update_progress)
 
 
     def get_swbs_group(self, detailed_location):
@@ -4834,26 +5248,30 @@ class DisagreementManager:
             messagebox.showerror("Output Folder Not Set", "Please select a database folder first.")
             return
 
-        # Group disagreement items by VeriDoc ID (assumed to be stored under "veridoc_number")
-        grouped_items = {}
+        # Group disagreement items by DOORS SPEC ID instead of VeriDoc number
+        grouped_by_spec_id = {}
         for item in self.disagreement_items:
-            veridoc = item.get("veridoc_number", "").strip().lower()
-            if veridoc:
-                grouped_items.setdefault(veridoc, []).append(item)
+            row_index = item['row_index']
+        
+            # Get the DOORS SPEC ID from the first column of the DataFrame
+            spec_id = self.app.df.iloc[row_index, 0]
+            if pd.isna(spec_id):
+                spec_id = "Unknown"
+            elif not isinstance(spec_id, str):
+                spec_id = str(spec_id)
+            
+            # Add this item to the appropriate group
+            if spec_id not in grouped_by_spec_id:
+                grouped_by_spec_id[spec_id] = []
+            grouped_by_spec_id[spec_id].append(item)
 
         self.report_list = []
-        # Now iterate over each group. For each veridoc, if any item has government_status "agree," skip.
-        for veridoc, items in grouped_items.items():
-            # If any entry in this group has government status "agree", skip generating a report.
-            if any(item.get("government_status", "").strip().lower() == "agree" for item in items):
-                continue
-
-            # Otherwise, pick a representative item (e.g., the first one) to generate the report.
-            rep_item = items[0]
-            result = self.generate_pdf_for_disagreement_item(rep_item, output_folder=self.output_folder)
-            if result:
-                pdf_path, swbs_group = result
-                spec_id = self.app.df.iloc[rep_item['row_index'], 0]
+    
+        # Process each DOORS SPEC ID group
+        for spec_id, items in grouped_by_spec_id.items():
+            # Generate a single report for each DOORS SPEC ID
+            pdf_path = self.generate_pdf_for_spec_id(spec_id, items, self.output_folder)
+            if pdf_path:
                 report_info = {
                     "SpecID": spec_id,
                     "Report_File": pdf_path
@@ -4861,31 +5279,528 @@ class DisagreementManager:
                 self.report_list.append(report_info)
 
         self.update_report_table()
-        messagebox.showinfo("Reports Created", "All disagreement reports have been generated.")
+        messagebox.showinfo("Reports Created", f"{len(self.report_list)} disagreement reports have been generated.")
+
+    def generate_pdf_for_spec_id(self, spec_id, items, output_folder):
+        """
+        Generates a single PDF disagreement report for a DOORS SPEC ID group.
+        All VeriDoc items belonging to this SPEC ID will be included in one report.
+        """
+        # Choose a representative item to get the row data, just to initialize
+        rep_item = items[0]
+        row_index = rep_item['row_index']
+    
+        # Set the current row in the app and update UI
+        self.app.current_row = row_index
+        self.app.update_ui_after_navigation()
+    
+        # Create filename based on DOORS SPEC ID
+        # Extract just the numeric part if needed
+        match = re.search(r'WCC-SPEC-(\d+)', spec_id)
+        tracking_number = match.group(1) if match else spec_id
+        filename = f"Disagreement Report - WCC-SPEC-{tracking_number}.pdf"
+    
+        # Get detailed location to determine SWBS group
+        try:
+            row = self.app.df.iloc[row_index]
+            assigned_docs = row["Assigned Verification Documents"]
+        except Exception:
+            assigned_docs = ""
+    
+        detailed_location = self.extract_detailed_location(assigned_docs)
+        swbs_group = self.get_swbs_group(detailed_location)
+    
+        # Create a subfolder based on SWBS group
+        target_folder = os.path.join(output_folder, swbs_group)
+        os.makedirs(target_folder, exist_ok=True)
+        pdf_path = os.path.join(target_folder, filename)
+    
+        # Get specification text and other content from the DataFrame
+        spec_text = self.app.spec_text_box.get("1.0", "end").strip()
+    
+        # Get Contractor Proposed Change Comment History (column index 8)
+        contractor_history_content = ""
+        if len(self.app.df.columns) > 8:
+            val = self.app.df.iloc[row_index, 8]
+            if pd.isna(val):
+                val = ""
+            contractor_history_content = str(val)
+
+        # Get Government Adjudication Comment History (column index 9)
+        gov_history_content = ""
+        if len(self.app.df.columns) > 9:
+            val = self.app.df.iloc[row_index, 9]
+            if pd.isna(val):
+                val = ""
+            gov_history_content = str(val)
+    
+        # Page setup
+        width, height = letter
+        left_margin = 72
+        right_margin = 72
+        top_margin = 50
+        bottom_margin = 72
+        usable_width = width - (left_margin + right_margin)
+    
+        # Create the PDF document
+        c = canvas.Canvas(pdf_path, pagesize=letter)
+        form = acroform.AcroForm(c)
+        styles = getSampleStyleSheet()
+        styleN = styles["Normal"]
+    
+        # Helper function for wrapping text
+        def wrap_text_to_pdf(c, text, x, y, max_width):
+            chars_per_line = int(max_width / 6)  # Approx for 12pt font
+            wrapped_lines = wrap(text, width=chars_per_line)
+            for wline in wrapped_lines:
+                if y < bottom_margin:
+                    c.showPage()
+                    c.setFont("Helvetica", 12)
+                    y = height - top_margin
+                c.drawString(x, y, wline)
+                y -= 14
+            return y
+    
+        # Write header information
+        c.setFont("Helvetica", 8)
+        y = height - top_margin
+        current_dt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        c.drawString(left_margin, y, f"Date/Time: {current_dt}")
+        y -= 10
+        c.drawString(left_margin, y, "Contract: 70Z02323D93270001")
+        y -= 10
+    
+        distribution_text = (
+            "DISTRIBUTION STATEMENT D: DISTRIBUTION AUTHORIZED TO DHS/CG/DOD AND THEIR "
+            "CONTRACTORS ONLY DUE TO ADMINISTRATIVE OR OPERATIONAL USE (5 OCT 2022). "
+            "OTHER REQUESTS SHALL BE REFERRED TO COMMANDANT (CG-9327)."
+        )
+        destruction_text = (
+            "DESTRUCTION NOTICE: DESTROY THIS DOCUMENT BY ANY METHOD THAT WILL "
+            "PREVENT DISCLOSURE OF CONTENTS OR RECONSTRUCTION OF THE DOCUMENT."
+        )
+        y = wrap_text_to_pdf(c, distribution_text, left_margin, y, usable_width)
+        y -= 10
+        y = wrap_text_to_pdf(c, destruction_text, left_margin, y, usable_width)
+    
+        # Build data for the main table by looking at all items in the group
+        all_breakdown_rows = []
+    
+        # Track the total agrees and disagrees
+        agree_count = 0
+        disagree_count = 0
+    
+        # Collect all VeriDoc entries from the table
+        # We need to manually rebuild the table since we're switching the row
+        # Use a dictionary to track unique entries by VeriDoc number
+        unique_entries = {}
+    
+        for item in items:
+            row_index = item['row_index']
+            # Temporarily set the current row to get the table data
+            self.app.current_row = row_index
+            self.app.update_ui_after_navigation()
+        
+            # Get data from the table
+            for line_id in self.app.table.get_children():
+                values = self.app.table.item(line_id, 'values')
+                veridoc = values[0]
+                di_number = values[1]
+                cdrl_subtitle = values[2]
+                gov_status = values[5]
+            
+                # Store only unique entries using veridoc as key
+                if veridoc not in unique_entries:
+                    unique_entries[veridoc] = [veridoc, di_number, cdrl_subtitle, gov_status]
+                
+                    # Track agreement counts
+                    if gov_status.lower() == "agree":
+                        agree_count += 1
+                    elif gov_status.lower() == "disagree":
+                        disagree_count += 1
+    
+        # Convert the dictionary of unique entries to a list for the table
+        all_breakdown_rows = list(unique_entries.values())
+    
+        # Return to the representative row for consistency
+        self.app.current_row = row_index
+        self.app.update_ui_after_navigation()
+    
+        # DOORS SPEC ID Summary Table
+        id_table_data = [
+            ["DOORS SPEC ID", "Excel Row", "Total Agreements", "Total Disagreements"],
+            [spec_id, str(row_index + 2), str(agree_count), str(disagree_count)],
+        ]
+        id_table = Table(id_table_data, colWidths=[130, 60, 100, 120])
+        id_style = TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("BOX", (0, 0), (-1, -1), 1, colors.black),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ])
+        id_table.setStyle(id_style)
+        w_id, h_id = id_table.wrap(usable_width, 50)
+        c.setFont("Helvetica", 12)
+        if y - h_id < bottom_margin:
+            c.showPage()
+            c.setFont("Helvetica", 12)
+            y = height - top_margin
+        id_table.drawOn(c, left_margin, y - h_id)
+        y = y - h_id - 30
+    
+        # Specification Text Section
+        c.drawString(left_margin, y, "Specification Text:")
+        y -= 20
+        y = wrap_text_to_pdf(c, spec_text, left_margin, y, usable_width)
+    
+        # Comments Table
+        y -= 30
+        c.drawString(left_margin, y, "Comments:")
+        y -= 20
+        contractor_lines = [line.strip() for line in contractor_history_content.split("\n") if line.strip() and "_____" not in line]
+        gov_lines = [line.strip() for line in gov_history_content.split("\n") if line.strip() and "_____" not in line]
+        comments_data = [["Contractor Proposed Change Comment History", "Government Adjudication Comment History"]]
+        max_len = max(len(contractor_lines), len(gov_lines))
+        for i in range(max_len):
+            c_text = contractor_lines[i] if i < len(contractor_lines) else ""
+            g_text = gov_lines[i] if i < len(gov_lines) else ""
+            comments_data.append([Paragraph(c_text, styleN), Paragraph(g_text, styleN)])
+        comments_table = Table(comments_data, colWidths=[usable_width / 2, usable_width / 2])
+        comments_table_style = TableStyle([
+            ("BOX", (0, 0), (-1, -1), 1, colors.black),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+        ])
+        comments_table.setStyle(comments_table_style)
+        w_comments, h_comments = comments_table.wrap(usable_width, y)
+        if y - h_comments < bottom_margin:
+            c.showPage()
+            c.setFont("Helvetica", 12)
+            y = height - top_margin
+        comments_table.drawOn(c, left_margin, y - h_comments)
+        y -= h_comments + 20
+    
+        # Breakdown Table
+        breakdown_data = [["VeriDoc Number", "DI Number", "CDRL Subtitle", "Government Assessed Status"]]
+        breakdown_data.extend(all_breakdown_rows)
+    
+        # Calculate column widths
+        approx_char_width = 6
+        max_lengths = [0, 0, 0, 0]
+        for row_val in breakdown_data:
+            for j, val in enumerate(row_val):
+                length = len(str(val))
+                if length > max_lengths[j]:
+                    max_lengths[j] = length
+        column_widths = [min(length * approx_char_width, 200) for length in max_lengths]
+    
+        # Convert long text to paragraphs
+        for i in range(1, len(breakdown_data)):
+            cdrl_text = breakdown_data[i][2]
+            breakdown_data[i][2] = Paragraph(cdrl_text, styleN)
+    
+        # Create the breakdown table
+        t = Table(breakdown_data, colWidths=column_widths)
+        style = TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("BOX", (0, 0), (-1, -1), 1, colors.black),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ])
+    
+        # Color code the government status cells
+        for i in range(1, len(breakdown_data)):
+            gov_status = str(breakdown_data[i][3]).strip().lower()
+            if gov_status == "disagree":
+                style.add("BACKGROUND", (3, i), (3, i), colors.red)
+                style.add("TEXTCOLOR", (3, i), (3, i), colors.white)
+            elif gov_status == "agree":
+                style.add("BACKGROUND", (3, i), (3, i), colors.green)
+                style.add("TEXTCOLOR", (3, i), (3, i), colors.white)
+            elif gov_status == "pending review":
+                style.add("BACKGROUND", (3, i), (3, i), colors.yellow)
+                style.add("TEXTCOLOR", (3, i), (3, i), colors.black)
+    
+        t.setStyle(style)
+        w, h = t.wrap(usable_width, 400)
+        if y - h < bottom_margin:
+            c.showPage()
+            c.setFont("Helvetica", 12)
+            y = height - top_margin
+        t.drawOn(c, left_margin, y - h)
+        y = y - h - 30
+    
+        # Disagreement Comments Section for each disagreed item
+        disagreement_rows = [row for row in all_breakdown_rows if row[3].lower() == "disagree"]
+    
+        if disagreement_rows:
+            c.drawString(left_margin, y, "Disagreement Comments:")
+            y -= 20
+            for row in disagreement_rows:
+                veridoc = row[0]
+                di_number = row[1]
+            
+                if y < bottom_margin:
+                    c.showPage()
+                    c.setFont("Helvetica", 12)
+                    y = height - top_margin
+            
+                # Draw a horizontal line for separation
+                c.line(left_margin, y, width - right_margin, y)
+                y -= 10
+                c.drawString(left_margin, y, f"VeriDoc: {veridoc}")
+                y -= 14
+                c.drawString(left_margin, y, f"DI Number: {di_number}")
+                y -= 28
+            
+                if y < bottom_margin:
+                    c.showPage()
+                    c.setFont("Helvetica", 12)
+                    y = height - top_margin
+            
+                c.drawString(left_margin, y, "Government Comments:")
+                y -= 14
+            
+                # Try to find government comments related to this VeriDoc or DI Number
+                matrix_comment = self.get_government_status_comment(veridoc)
+                if matrix_comment:
+                    y = wrap_text_to_pdf(c, matrix_comment, left_margin, y, usable_width)
+                else:
+                    related_gov_lines = [gl for gl in gov_lines if di_number in gl]
+                    if not related_gov_lines:
+                        c.setFillColor(colors.red)
+                        c.drawString(left_margin, y, "No specific government comments related to this item.")
+                        c.setFillColor(colors.black)
+                        y -= 14
+                    else:
+                        for gl in related_gov_lines:
+                            y = wrap_text_to_pdf(c, gl, left_margin, y, usable_width)
+            
+                # Add Birdon Response Comments text field
+                y -= 10
+                c.drawString(left_margin, y, "Birdon Response Comments:")
+                y -= 14
+            
+                form.textfield(
+                    name=f"birdonResponse_{veridoc}",
+                    tooltip="Birdon Response Comments",
+                    x=left_margin,
+                    y=y - 50,
+                    width=usable_width,
+                    height=50,
+                    borderStyle="inset",
+                    borderWidth=1,
+                    fillColor=colors.white,
+                )
+                y -= 60
+        else:
+            c.drawString(left_margin, y, "No items are marked 'Disagree' in this row.")
+            y -= 20
+    
+        # General Comments field
+        # Make sure there's enough space for the general comments section (title + field + margin)
+        required_space = 150  # 10px for line + 10px for title + 80px for field + 50px margin
+        if y < bottom_margin + required_space:
+            c.showPage()
+            c.setFont("Helvetica", 12)
+            y = height - top_margin
+    
+        c.line(left_margin, y, width - right_margin, y)
+        y -= 10
+        c.drawString(left_margin, y, "General Comments:")
+        y -= 20
+    
+        form.textfield(
+            name="generalComments",
+            tooltip="General Comments",
+            x=left_margin,
+            y=y - 80,
+            width=usable_width,
+            height=80,
+            borderStyle="inset",
+            borderWidth=1,
+            fillColor=colors.white,
+        )
+        y -= (80 + 40)
+    
+        # Options for Birdon (checkboxes)
+        # Check if we need a new page for the options section
+        required_space = 120  # Approximately 20px per line × 6 lines
+        if y < bottom_margin + required_space:
+            c.showPage()
+            c.setFont("Helvetica", 12)
+            y = height - top_margin
+        
+        c.drawString(left_margin, y, "Options for Birdon")
+        y -= 20
+        c.drawString(left_margin, y, "Disagreement Not Clear - Send to USCG for Clarification")
+        form.checkbox(
+            name="disagreementNotClear",
+            tooltip="Check if the disagreement is not clear and needs USCG clarification",
+            x=left_margin + 420,
+            y=y - 8,
+            size=12,
+            borderWidth=1,
+            checked=False,
+            buttonStyle="check",
+        )
+        y -= 20
+        c.drawString(left_margin, y, "Disagreement can be resolved with updated locations flag for RTVM")
+        form.checkbox(
+            name="disagreementResolvedLocations",
+            tooltip="Check if the disagreement can be resolved with updated locations in RTVM",
+            x=left_margin + 420,
+            y=y - 8,
+            size=12,
+            borderWidth=1,
+            checked=False,
+            buttonStyle="check",
+        )
+        y -= 20
+        c.drawString(left_margin, y, "Disagreement can not be resolved at this time")
+        form.checkbox(
+            name="disagreementNotResolved",
+            tooltip="Check if the disagreement cannot be resolved at this time",
+            x=left_margin + 420,
+            y=y - 8,
+            size=12,
+            borderWidth=1,
+            checked=False,
+            buttonStyle="check",
+        )
+        y -= 40
+    
+        # USCG Response field
+        # Check if we need a page break for the USCG response section
+        required_space = 110  # Text label + text field + margin
+        if y < bottom_margin + required_space:
+            c.showPage()
+            c.setFont("Helvetica", 12)
+            y = height - top_margin
+        
+        c.drawString(left_margin, y, "USCG Response:")
+        y -= 20
+    
+        form.textfield(
+            name="uscgResponceBox",
+            tooltip="Enter USCG Response",
+            x=left_margin,
+            y=y - 60,
+            width=usable_width,
+            height=60,
+            borderStyle="inset",
+            borderWidth=1,
+            fillColor=colors.white,
+        )
+        y -= (60 + 40)
+    
+        # USCG Signature and Date
+        # Check if we need a page break for the signature and date section
+        required_space = 100  # For both signature and date fields + margin
+        if y < bottom_margin + required_space:
+            c.showPage()
+            c.setFont("Helvetica", 12)
+            y = height - top_margin
+    
+        single_line_height = 20
+        c.drawString(left_margin, y, "USCG Signature (approved to disregard disagreement):")
+        form.textfield(
+            name="uscgSignature",
+            tooltip="USCG Signature",
+            x=left_margin + 364,
+            y=y - 12,
+            width=150,
+            height=single_line_height,
+            borderStyle="inset",
+            borderWidth=1,
+            fillColor=colors.white,
+        )
+        y -= 40
+    
+        # Make sure date of resolution doesn't go off the page
+        if y < bottom_margin + 40:  # Need at least 40px for the date field
+            c.showPage()
+            c.setFont("Helvetica", 12)
+            y = height - top_margin
+        
+        c.drawString(left_margin, y, "Date of Resolution:")
+        form.textfield(
+            name="resolutionDate",
+            tooltip="Date of Resolution",
+            x=left_margin + 228,
+            y=y - 12,
+            width=200,
+            height=single_line_height,
+            borderStyle="inset",
+            borderWidth=1,
+            fillColor=colors.white,
+        )
+    
+        # Make sure we have adequate margin at the bottom of the last page
+        y -= (single_line_height + 30)
+        if y < bottom_margin:
+            c.showPage()
+    
+        # Save the PDF
+        c.showPage()
+        c.save()
+    
+        return pdf_path
+
+
+
 
     def update_report_table(self):
         """
         Reads the PDF form fields for each report in self.report_list concurrently
-        and updates the treeview. (Uses a timeout to avoid hanging on any single file.)
+        and updates the treeview with the checkbox states.
         """
         print("Updating report table with generated report list...")
+        
+        # Clear existing items in the treeview
+        for child in self.report_tree.get_children():
+            self.report_tree.delete(child)
+        
+        # Update column headers to meaningful names
+        self.report_tree.heading("Button1", text="Not Clear")
+        self.report_tree.heading("Button2", text="Can Resolve")
+        self.report_tree.heading("Button3", text="Cannot Resolve")
 
-        # Define a helper function to read one PDF.
-        def read_pdf_fields(report):
-            pdf_path = report["Report_File"]
-            fields = get_pdf_form_fields(pdf_path)
-            # Change the field names as appropriate.
-            button1 = fields.get("Button1", "Not Set")
-            button2 = fields.get("Button2", "Not Set")
-            button3 = fields.get("Button3", "Not Set")
-            return (report["SpecID"], button1, button2, button3, pdf_path)
+        def read_pdf_fields(self, report):
+            """
+            Read fields from a single PDF report and handle potential errors
+            """
+            try:
+                pdf_path = report["Report_File"]
+                print(f"Reading fields from: {os.path.basename(pdf_path)}")
+        
+                fields = get_pdf_form_fields(pdf_path)
+        
+                # Get checkbox states
+                not_clear = "✓" if fields.get("disagreementNotClear", False) else ""
+                can_resolve = "✓" if fields.get("disagreementResolvedLocations", False) else ""
+                cannot_resolve = "✓" if fields.get("disagreementNotResolved", False) else ""
+        
+                # Log the fields for debugging
+                print(f"Fields for {os.path.basename(pdf_path)}: not_clear={not_clear}, can_resolve={can_resolve}, cannot_resolve={cannot_resolve}")
+        
+                return (report["SpecID"], not_clear, can_resolve, cannot_resolve, pdf_path)
+            except Exception as e:
+                print(f"Error reading PDF fields from {report['Report_File']}: {str(e)}")
+                # Return a default result rather than failing
+                return (report["SpecID"], "", "", "", report["Report_File"])
 
         results = []
         with ThreadPoolExecutor(max_workers=10) as executor:
             futures = [executor.submit(read_pdf_fields, report) for report in self.report_list]
             for future in futures:
                 try:
-                    # Use a timeout to prevent a single PDF from hanging.
+                    # Use a timeout to prevent a single PDF from hanging
                     result = future.result(timeout=10)
                     results.append(result)
                 except TimeoutError:
@@ -4893,7 +5808,7 @@ class DisagreementManager:
                 except Exception as e:
                     print(f"Error reading PDF fields: {e}")
 
-        # Now update the treeview on the main thread.
+        # Now update the treeview on the main thread
         def update_treeview():
             for item in results:
                 self.report_tree.insert("", "end", values=item)
