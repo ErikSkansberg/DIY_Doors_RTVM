@@ -57,6 +57,7 @@ from reportlab.lib import colors
 from reportlab.pdfbase import acroform
 from pdfrw import PdfReader
 
+
 class PatternDialog(tk.Toplevel):
     def __init__(self, master, app, obj_identifier, di_number, current_row):
         super().__init__(master)
@@ -524,7 +525,17 @@ class PatternDialog(tk.Toplevel):
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save to Excel file: {e}")
 
+import os
+import queue
 import threading
+import shutil
+from openpyxl import load_workbook
+from copy import copy
+import pandas as pd
+import time
+import re
+from tkinter import ttk, messagebox, filedialog, simpledialog
+
 class RTVMApp:
     def __init__(self, root):
         self.root = root
@@ -1260,67 +1271,1127 @@ class RTVMApp:
 ### Start of RTVM Subsets tool pack ################################################################################################################################################################################################################################
 
     def open_rvtm_subset_management_window(self):
-            self.rvtm_subset_window = tk.Toplevel(self.root)
-            self.rvtm_subset_window.title("RTVM Subset Management")
+        self.rvtm_subset_window = tk.Toplevel(self.root)
+        self.rvtm_subset_window.title("RTVM Subset Management")
 
-            explanation = (
-                "This RTVM Subset Management tool allows you to:\n"
-                "- Create a summary report of verification data\n"
-                "- Export photos of the generated report\n"
-                "- Create subsets of the RTVM based on predefined SWBS groups\n"
-                "- Recombine these subsets back into a single file\n"
-                "- Merge a single subset into the main RTVM file\n\n"
-                "The data is taken from the currently loaded main RTVM file.\n"
-                "Please select a base location first."
+        explanation = (
+            "This RTVM Subset Management tool allows you to:\n"
+            "- Create a summary report of verification data\n"
+            "- Export photos of the generated report\n"
+            "- Create subsets of the RTVM based on predefined SWBS groups\n"
+            "- Recombine these subsets back into a single file\n"
+            "- Merge a single subset into the main RTVM file\n"
+            "- Combine and update subsets while preserving changes\n\n"
+            "The data is taken from the currently loaded main RTVM file.\n"
+            "Please select a base location first."
+        )
+        tk.Label(self.rvtm_subset_window, text=explanation, justify="left").pack(pady=10, padx=10)
+
+        top_frame = tk.Frame(self.rvtm_subset_window)
+        top_frame.pack(fill='x', padx=10, pady=10)
+
+        # Button to select the base location
+        select_location_button = tk.Button(
+            top_frame, text="Select Base Location", command=self.select_base_location
+        )
+        select_location_button.grid(row=0, column=0, padx=5, pady=5)
+
+        # Display the currently loaded file name
+        tk.Label(top_frame, text="Current (New) File:", anchor='w').grid(row=0, column=1, sticky='w')
+        self.file_name_var = tk.StringVar(value=self.excel_file_path if self.excel_file_path else "No File Loaded")
+        tk.Label(top_frame, textvariable=self.file_name_var, width=50, anchor='w').grid(row=0, column=2, padx=5, pady=5, sticky='ew')
+
+        # Create Summary Report Button
+        self.create_report_button = tk.Button(
+            top_frame, text="Create Summary Report", command=self.create_summary_report
+        )
+        self.create_report_button.grid(row=0, column=3, padx=5, pady=5)
+
+        # Export Photos Button
+        self.export_photos_button = tk.Button(
+            top_frame, text="Export Photos of Report", command=self.export_photos_of_report
+        )
+        self.export_photos_button.grid(row=0, column=4, padx=5, pady=5)
+
+        # Create Subsets Button
+        self.create_subsets_button = tk.Button(
+            top_frame, text="Create Subsets", command=self.create_subsets
+        )
+        self.create_subsets_button.grid(row=0, column=5, padx=5, pady=5)
+
+        # Recombine Subsets Button
+        self.recombine_subsets_button = tk.Button(
+            top_frame, text="Recombine Subsets", command=self.recombine_subsets
+        )
+        self.recombine_subsets_button.grid(row=0, column=6, padx=5, pady=5)
+
+        # Merge Single Subset Button
+        self.merge_single_subset_button = tk.Button(
+            top_frame, text="Merge Single Subset", command=self.merge_single_subset
+        )
+        self.merge_single_subset_button.grid(row=0, column=7, padx=5, pady=5)
+    
+        # NEW: Add Combine & Update Subsets Button
+        self.combine_update_button = tk.Button(
+            top_frame, text="Combine & Update Subsets", command=self.combine_and_update_subsets
+        )
+        self.combine_update_button.grid(row=0, column=8, padx=5, pady=5)
+
+        self.set_assigned_verification_cells()
+
+
+
+
+    def combine_and_update_subsets(self):
+        """
+        This function:
+        1. Finds all subset files in the base location
+        2. Combines their content into the main file
+        3. Handles conflicts when the same requirement appears in multiple subsets
+        4. Creates updated subsets from the newly combined main file
+        """
+        if not self.selected_base_path:
+            messagebox.showerror("Error", "No base location selected. Please select a base location first.")
+            return
+
+        if not self.excel_file_path:
+            messagebox.showerror("Error", "No main Excel file loaded. Please upload a main file first.")
+            return
+
+        # Step 1: Select folder containing subsets
+        subset_folder = filedialog.askdirectory(
+            title="Select Folder Containing RTVM Subsets to Combine", 
+            initialdir=self.selected_base_path
+        )
+        if not subset_folder:
+            return
+
+        # Step 2: Find all the subset Excel files
+        subset_files = []
+        for root, dirs, files in os.walk(subset_folder):
+            for file in files:
+                if file.endswith(('.xlsx', '.xls')) and 'RTVM Subset' in file:
+                    subset_files.append(os.path.join(root, file))
+
+        if not subset_files:
+            messagebox.showinfo("No Subsets Found", "No RTVM subset files were found in the selected folder.")
+            return
+
+        # Step 3: Show progress dialog and start the combination process
+        self.show_combine_update_progress(subset_files)
+
+    def show_combine_update_progress(self, subset_files):
+        """Creates a progress dialog and starts the combination process in a background thread."""
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Combining and Updating Subsets")
+        progress_window.geometry("500x250")
+        progress_window.transient(self.root)
+        progress_window.grab_set()  # Make the window modal
+
+        # Status label
+        status_var = tk.StringVar(value="Preparing to combine subset files...")
+        status_label = tk.Label(progress_window, textvariable=status_var)
+        status_label.pack(pady=(20, 10))
+
+        # Progress bar
+        progress_var = tk.DoubleVar(value=0)
+        progress_bar = ttk.Progressbar(progress_window, variable=progress_var, maximum=100, length=450)
+        progress_bar.pack(pady=10, padx=20)
+
+        # Detail label for current operation
+        detail_var = tk.StringVar(value="")
+        detail_label = tk.Label(progress_window, textvariable=detail_var, font=("Helvetica", 9))
+        detail_label.pack(pady=10)
+
+        # Create a queue for thread-safe communication
+        result_queue = queue.Queue()
+
+        # Start the combination process in a background thread
+        threading.Thread(
+            target=self.process_combine_and_update,
+            args=(subset_files, result_queue),
+            daemon=True
+        ).start()
+
+        # Update function to handle messages from the worker thread
+        def update_progress():
+            try:
+                while True:
+                    message_type, data = result_queue.get_nowait()
+                
+                    if message_type == 'status':
+                        status_var.set(data)
+                
+                    elif message_type == 'detail':
+                        detail_var.set(data)
+                
+                    elif message_type == 'progress':
+                        current, total = data
+                        progress_percent = (current / total) * 100 if total > 0 else 0
+                        progress_var.set(progress_percent)
+                
+                    elif message_type == 'conflict':
+                        # Handle conflict in the main thread
+                        self.handle_requirement_conflict(data, result_queue)
+                
+                    elif message_type == 'error':
+                        messagebox.showerror("Error", data)
+                        progress_window.destroy()
+                        return
+                
+                    elif message_type == 'complete':
+                        status_var.set("Complete! Creating updated subsets...")
+                        progress_var.set(100)
+                        # Start creating updated subsets
+                        threading.Thread(
+                            target=self.create_updated_subsets,
+                            args=(result_queue, data),  # data contains the path to the combined file
+                            daemon=True
+                        ).start()
+                
+                    elif message_type == 'all_complete':
+                        status_var.set("All operations complete!")
+                        progress_var.set(100)
+                    
+                        # Close the progress window after a short delay
+                        progress_window.after(2000, progress_window.destroy)
+                    
+                        # Show completion message
+                        messagebox.showinfo(
+                            "Operation Complete", 
+                            "Successfully combined subsets and created updated subset files."
+                        )
+                        return
+                    
+            except queue.Empty:
+                # Schedule another check
+                progress_window.after(100, update_progress)
+        
+        # Start the progress update loop
+        progress_window.after(100, update_progress)
+
+    def process_combine_and_update(self, subset_files, result_queue):
+        """
+        Worker function to process the subset files and combine them.
+        This runs in a background thread.
+        """
+        try:
+            # Load the main file to get the structure
+            result_queue.put(('status', "Loading main Excel file..."))
+            main_wb = load_workbook(filename=self.excel_file_path)
+            main_ws = None
+            if 'RTVM' in main_wb.sheetnames:
+                main_ws = main_wb['RTVM']
+            else:
+                main_ws = main_wb.active
+        
+            # Create a map of DOORS SPEC ID to row in the main file
+            result_queue.put(('status', "Building index of main file..."))
+            id_to_row = {}
+            for row_idx, row in enumerate(main_ws.iter_rows(min_row=2, values_only=False), start=2):
+                doors_spec_id = row[0].value
+                if doors_spec_id:
+                    id_to_row[str(doors_spec_id)] = row_idx
+        
+            # Create a temporary file to build the combined result
+            result_queue.put(('status', "Creating temporary file for combined data..."))
+            combined_file = os.path.join(self.selected_base_path, "temp_combined_rtvm.xlsx")
+            shutil.copy2(self.excel_file_path, combined_file)
+        
+            # Load the combined workbook
+            result_queue.put(('status', "Loading temporary combined file..."))
+            combined_wb = load_workbook(filename=combined_file)
+            if 'RTVM' in combined_wb.sheetnames:
+                combined_ws = combined_wb['RTVM']
+            else:
+                combined_ws = combined_wb.active
+            
+            # Track conflicts that need user resolution
+            conflicts = []
+            doors_id_to_subset_data = {}
+            
+            # Process each subset file
+            total_files = len(subset_files)
+            for idx, subset_file in enumerate(subset_files, start=1):
+                result_queue.put(('progress', (idx, total_files)))
+                result_queue.put(('detail', f"Processing file {idx}/{total_files}: {os.path.basename(subset_file)}"))
+            
+                try:
+                    # Load the subset workbook
+                    subset_wb = load_workbook(filename=subset_file)
+                    if 'RTVM' in subset_wb.sheetnames:
+                        subset_ws = subset_wb['RTVM']
+                    else:
+                        subset_ws = subset_wb.active
+                
+                    # Process each row in the subset
+                    for subset_row in subset_ws.iter_rows(min_row=2, values_only=False):
+                        doors_spec_id = subset_row[0].value
+                        if not doors_spec_id:
+                            continue
+                        
+                        doors_spec_id = str(doors_spec_id)
+                    
+                        # Check if this DOORS SPEC ID exists in the main file
+                        if doors_spec_id in id_to_row:
+                            main_row_idx = id_to_row[doors_spec_id]
+                        
+                            # Get the change request input (column G, index 6)
+                            subset_change_request = subset_row[6].value
+                            if subset_change_request:
+                                if doors_spec_id not in doors_id_to_subset_data:
+                                    doors_id_to_subset_data[doors_spec_id] = []
+                                
+                                doors_id_to_subset_data[doors_spec_id].append({
+                                    'file': os.path.basename(subset_file),
+                                    'change_request': subset_change_request,
+                                    'comment_input': subset_row[7].value if len(subset_row) > 7 else None
+                                })
+                
+                    subset_wb.close()
+                
+                except Exception as e:
+                    result_queue.put(('detail', f"Error processing {os.path.basename(subset_file)}: {str(e)}"))
+                    continue
+        
+            # Now check for conflicts and resolve them
+            result_queue.put(('status', "Checking for conflicts..."))
+        
+            # Resolve conflicts for each DOORS SPEC ID
+            for doors_spec_id, subset_entries in doors_id_to_subset_data.items():
+                if len(subset_entries) > 1:
+                    # There are multiple entries for this DOORS SPEC ID
+                    result_queue.put(('detail', f"Found conflict for SPEC ID: {doors_spec_id}"))
+                
+                    # See if entries actually conflict
+                    has_conflict = False
+                    base_change_request = subset_entries[0]['change_request']
+                    for entry in subset_entries[1:]:
+                        if entry['change_request'] != base_change_request:
+                            has_conflict = True
+                            break
+                        
+                    if has_conflict:
+                        # Send conflict to main thread for resolution
+                        result_queue.put(('conflict', {
+                            'doors_spec_id': doors_spec_id,
+                            'entries': subset_entries
+                        }))
+                    
+                        # Wait for response with the resolved value
+                        while True:
+                            message_type, data = result_queue.get()
+                            if message_type == 'conflict_resolved':
+                                resolved_entry = data
+                                break
+                            
+                        # Use the resolved value
+                        main_row_idx = id_to_row[doors_spec_id]
+                        combined_ws.cell(row=main_row_idx, column=7, value=resolved_entry['change_request'])
+                        if resolved_entry.get('comment_input'):
+                            combined_ws.cell(row=main_row_idx, column=8, value=resolved_entry['comment_input'])
+                    else:
+                        # No actual conflict, values are the same - use the first one
+                        main_row_idx = id_to_row[doors_spec_id]
+                        combined_ws.cell(row=main_row_idx, column=7, value=base_change_request)
+                        if subset_entries[0].get('comment_input'):
+                            combined_ws.cell(row=main_row_idx, column=8, value=subset_entries[0]['comment_input'])
+                else:
+                    # Only one entry - no conflict
+                    entry = subset_entries[0]
+                    main_row_idx = id_to_row[doors_spec_id]
+                    combined_ws.cell(row=main_row_idx, column=7, value=entry['change_request'])
+                    if entry.get('comment_input'):
+                        combined_ws.cell(row=main_row_idx, column=8, value=entry['comment_input'])
+        
+            # Save the combined workbook
+            result_queue.put(('status', "Saving combined file..."))
+            combined_wb.save(combined_file)
+            combined_wb.close()
+        
+            # Replace the main file with the combined file
+            result_queue.put(('status', "Updating main file..."))
+            os.replace(combined_file, self.excel_file_path)
+        
+            # Reload the main file in the app
+            result_queue.put(('detail', "Reloading main file..."))
+            self.df = pd.read_excel(self.excel_file_path)
+        
+            # Signal completion and provide the path to the updated main file
+            result_queue.put(('complete', self.excel_file_path))
+        
+        except Exception as e:
+            result_queue.put(('error', f"Error during combination process: {str(e)}"))
+
+    def handle_requirement_conflict(self, conflict_data, result_queue):
+        """
+        Shows a dialog to resolve a conflict between different versions of the same requirement.
+        This runs in the main thread.
+    
+        The enhanced version includes:
+        - Detailed conflict analysis
+        - Color-coded line comparison
+        - Conflict categorization
+        - Line-by-line comparison for better decision-making
+        """
+        doors_spec_id = conflict_data['doors_spec_id']
+        entries = conflict_data['entries']
+    
+        # Create conflict resolution dialog
+        conflict_window = tk.Toplevel(self.root)
+        conflict_window.title(f"Resolve Conflict for SPEC ID: {doors_spec_id}")
+        conflict_window.geometry("900x700")  # Larger window for enhanced UI
+        conflict_window.transient(self.root)
+        conflict_window.grab_set()  # Make the window modal
+    
+        # Add explanation
+        header_frame = tk.Frame(conflict_window)
+        header_frame.pack(fill="x", padx=10, pady=10)
+    
+        tk.Label(
+            header_frame, 
+            text=f"Conflicting Requirements for SPEC ID: {doors_spec_id}",
+            font=("Helvetica", 12, "bold")
+        ).pack(side="top", anchor="w")
+    
+        tk.Label(
+            header_frame,
+            text="This requirement has different change requests in multiple subset files.\nPlease review the conflicts and select how to resolve them.",
+            justify="left"
+        ).pack(side="top", anchor="w", pady=5)
+    
+        # Add a notebook for tabs
+        notebook = ttk.Notebook(conflict_window)
+        notebook.pack(fill="both", expand=True, padx=10, pady=5)
+    
+        # Tab 1: Overview and Recommended Action
+        overview_frame = tk.Frame(notebook)
+        notebook.add(overview_frame, text="Overview & Recommended Action")
+    
+        # First, analyze the conflicts
+        if len(entries) >= 2:
+            # Find the first two entries with different change requests to analyze
+            entry1 = entries[0]
+            entry2 = None
+            for e in entries[1:]:
+                if e['change_request'] != entry1['change_request']:
+                    entry2 = e
+                    break
+                
+            if entry2 is None:
+                # Fallback if no actual conflict is found (shouldn't happen)
+                entry2 = entries[1]
+            
+            # Run conflict analysis
+            conflict_analysis = self.analyze_conflicts(
+                entry1['change_request'] or "", 
+                entry2['change_request'] or ""
             )
-            tk.Label(self.rvtm_subset_window, text=explanation, justify="left").pack(pady=10, padx=10)
-
-            top_frame = tk.Frame(self.rvtm_subset_window)
-            top_frame.pack(fill='x', padx=10, pady=10)
-
-            # Button to select the base location
-            select_location_button = tk.Button(
-                top_frame, text="Select Base Location", command=self.select_base_location
+        else:
+            # Not enough entries for meaningful analysis
+            conflict_analysis = {
+                'common_lines_count': 0,
+                'unique_to_1_count': 0, 
+                'unique_to_2_count': 0,
+                'operations': {'add': {'1': [], '2': [], 'common': []},
+                              'del': {'1': [], '2': [], 'common': []},
+                              'update': {'1': [], '2': [], 'common': []}},
+                'veridoc_conflicts': [],
+                'merged_lines': []
+            }
+    
+        # Extract all unique lines from all change requests for merging
+        all_lines = set()
+        for entry in entries:
+            if entry['change_request']:
+                lines = entry['change_request'].split('\n')
+                for line in lines:
+                    if line.strip():
+                        all_lines.add(line)
+    
+        merged_text = "\n".join(sorted(all_lines))
+    
+        # Create overview summary
+        overview_summary_frame = tk.LabelFrame(overview_frame, text="Conflict Summary")
+        overview_summary_frame.pack(fill="x", padx=5, pady=5)
+    
+        # Build summary text
+        summary_text = (
+            f"Files with different values: {len(entries)}\n"
+            f"Total unique change request lines: {len(all_lines)}\n"
+            f"Common lines to all files: {conflict_analysis['common_lines_count']}\n"
+            f"Lines unique to first file: {conflict_analysis['unique_to_1_count']}\n"
+            f"Lines unique to second file: {conflict_analysis['unique_to_2_count']}\n\n"
+        )
+    
+        # Add VeriDoc conflict details if any
+        if conflict_analysis['veridoc_conflicts']:
+            summary_text += "VeriDoc Conflicts Detected:\n"
+            for i, conflict in enumerate(conflict_analysis['veridoc_conflicts']):
+                summary_text += f"- Conflict {i+1}: {conflict['veridoc']} - {conflict['conflict_type']}\n"
+            summary_text += "\n"
+    
+        summary_text += "Operations breakdown:\n"
+        summary_text += f"- ADD operations: {len(conflict_analysis['operations']['add']['common'])} common, "
+        summary_text += f"{len(conflict_analysis['operations']['add']['1'])} unique to first file, "
+        summary_text += f"{len(conflict_analysis['operations']['add']['2'])} unique to second file\n"
+    
+        summary_text += f"- DEL operations: {len(conflict_analysis['operations']['del']['common'])} common, "
+        summary_text += f"{len(conflict_analysis['operations']['del']['1'])} unique to first file, "
+        summary_text += f"{len(conflict_analysis['operations']['del']['2'])} unique to second file\n"
+    
+        summary_text += f"- UPDATE operations: {len(conflict_analysis['operations']['update']['common'])} common, "
+        summary_text += f"{len(conflict_analysis['operations']['update']['1'])} unique to first file, "
+        summary_text += f"{len(conflict_analysis['operations']['update']['2'])} unique to second file\n"
+    
+        summary_label = tk.Label(overview_summary_frame, text=summary_text, justify="left")
+        summary_label.pack(fill="x", padx=10, pady=5, anchor="w")
+    
+        # Recommendation section
+        recommendation_frame = tk.LabelFrame(overview_frame, text="Recommended Action")
+        recommendation_frame.pack(fill="x", padx=5, pady=5)
+    
+        # Get recommendation based on conflict analysis
+        recommendation = ""
+    
+        if conflict_analysis['veridoc_conflicts']:
+            recommendation = (
+                "CONFLICTS DETECTED: There are conflicting operations for the same VeriDoc numbers.\n"
+                "Recommendation: Review the individual conflicts in the 'Detailed Comparison' tab and consider manual resolution.\n"
+                "WARNING: Automatic merging might include conflicting operations."
             )
-            select_location_button.grid(row=0, column=0, padx=5, pady=5)
-
-            # Display the currently loaded file name
-            tk.Label(top_frame, text="Current (New) File:", anchor='w').grid(row=0, column=1, sticky='w')
-            self.file_name_var = tk.StringVar(value=self.excel_file_path if self.excel_file_path else "No File Loaded")
-            tk.Label(top_frame, textvariable=self.file_name_var, width=50, anchor='w').grid(row=0, column=2, padx=5, pady=5, sticky='ew')
-
-            # Create Summary Report Button
-            self.create_report_button = tk.Button(
-                top_frame, text="Create Summary Report", command=self.create_summary_report
+        elif conflict_analysis['unique_to_1_count'] > 0 and conflict_analysis['unique_to_2_count'] > 0:
+            recommendation = (
+                "PARTIAL CONFLICTS: Each file contains unique change requests not found in the other.\n"
+                "Recommendation: Merge all values to include all unique operations from each file."
             )
-            self.create_report_button.grid(row=0, column=3, padx=5, pady=5)
-
-            # Export Photos Button
-            self.export_photos_button = tk.Button(
-                top_frame, text="Export Photos of Report", command=self.export_photos_of_report
+        elif conflict_analysis['unique_to_1_count'] == 0 and conflict_analysis['unique_to_2_count'] > 0:
+            recommendation = (
+                "FILE 2 CONTAINS ADDITIONAL DATA: The second file includes all operations from the first file plus additional ones.\n"
+                "Recommendation: Use the second file as it contains more information."
             )
-            self.export_photos_button.grid(row=0, column=4, padx=5, pady=5)
-
-            # Create Subsets Button
-            self.create_subsets_button = tk.Button(
-                top_frame, text="Create Subsets", command=self.create_subsets
+        elif conflict_analysis['unique_to_1_count'] > 0 and conflict_analysis['unique_to_2_count'] == 0:
+            recommendation = (
+                "FILE 1 CONTAINS ADDITIONAL DATA: The first file includes all operations from the second file plus additional ones.\n"
+                "Recommendation: Use the first file as it contains more information."
             )
-            self.create_subsets_button.grid(row=0, column=5, padx=5, pady=5)
-
-            # Recombine Subsets Button
-            self.recombine_subsets_button = tk.Button(
-                top_frame, text="Recombine Subsets", command=self.recombine_subsets
+        else:
+            recommendation = (
+                "NO SIGNIFICANT CONFLICT: The files appear to have matching operations.\n"
+                "Recommendation: Use either file as they contain equivalent information."
             )
-            self.recombine_subsets_button.grid(row=0, column=6, padx=5, pady=5)
-
-            # Merge Single Subset Button
-            self.merge_single_subset_button = tk.Button(
-                top_frame, text="Merge Single Subset", command=self.merge_single_subset
+    
+        recommendation_label = tk.Label(
+            recommendation_frame, 
+            text=recommendation, 
+            justify="left",
+            wraplength=800
+        )
+        recommendation_label.pack(fill="x", padx=10, pady=5, anchor="w")
+    
+        # Create radio buttons for selection
+        option_var = tk.StringVar(value="merge")  # Default to merge
+    
+        # Options frame
+        options_frame = tk.LabelFrame(overview_frame, text="Resolution Options")
+        options_frame.pack(fill="both", expand=True, padx=5, pady=5)
+    
+        # Merge option
+        merge_frame = tk.Frame(options_frame)
+        merge_frame.pack(fill="x", padx=5, pady=5)
+    
+        merge_radio = tk.Radiobutton(
+            merge_frame, 
+            text="Merge all values (combines all unique change requests from all files)", 
+            variable=option_var, 
+            value="merge",
+            font=("Helvetica", 10, "bold")
+        )
+        merge_radio.pack(side="left", anchor="w", padx=5)
+    
+        # Preview and choose from individual files
+        files_frame = tk.LabelFrame(options_frame, text="Choose Individual File")
+        files_frame.pack(fill="both", expand=True, padx=5, pady=5)
+    
+        # Create a frame with scrollable content for file options
+        file_options_canvas = tk.Canvas(files_frame)
+        file_options_scrollbar = ttk.Scrollbar(files_frame, orient="vertical", command=file_options_canvas.yview)
+        file_options_scrollable_frame = ttk.Frame(file_options_canvas)
+    
+        file_options_scrollable_frame.bind(
+            "<Configure>",
+            lambda e: file_options_canvas.configure(scrollregion=file_options_canvas.bbox("all"))
+        )
+    
+        file_options_canvas.create_window((0, 0), window=file_options_scrollable_frame, anchor="nw")
+        file_options_canvas.configure(yscrollcommand=file_options_scrollbar.set)
+    
+        file_options_canvas.pack(side="left", fill="both", expand=True, padx=5, pady=5)
+        file_options_scrollbar.pack(side="right", fill="y")
+    
+        # Add radio buttons and previews for each file
+        for i, entry in enumerate(entries):
+            file_frame = tk.Frame(file_options_scrollable_frame)
+            file_frame.pack(fill="x", padx=2, pady=5)
+        
+            radio = tk.Radiobutton(
+                file_frame, 
+                text=f"Use only values from: {entry['file']}", 
+                variable=option_var, 
+                value=str(i)
             )
-            self.merge_single_subset_button.grid(row=0, column=7, padx=5, pady=5)
+            radio.pack(side="top", anchor="w", padx=5)
+        
+            preview_frame = tk.Frame(file_frame)
+            preview_frame.pack(fill="x", padx=20, pady=2)
+        
+            preview = tk.Text(preview_frame, height=3, width=80)
+            preview.pack(fill="x", side="left", expand=True)
+            preview.insert("1.0", entry['change_request'] if entry['change_request'] else "")
+            preview.config(state="disabled")
+        
+            # Add scrollbar to preview
+            preview_scrollbar = ttk.Scrollbar(preview_frame, orient="vertical", command=preview.yview)
+            preview.configure(yscrollcommand=preview_scrollbar.set)
+            preview_scrollbar.pack(side="right", fill="y")
+    
+        # Tab 2: Line by Line Comparison
+        comparison_frame = ttk.Frame(notebook)
+        notebook.add(comparison_frame, text="Detailed Comparison")
+    
+        # Create a tree view for line-by-line comparison
+        columns = ["Line", "Origin", "Type", "Content"]
+        tree = ttk.Treeview(comparison_frame, columns=columns, show="headings", selectmode="browse")
+    
+        # Configure column headings and widths
+        tree.heading("Line", text="#")
+        tree.heading("Origin", text="Origin")
+        tree.heading("Type", text="Type")
+        tree.heading("Content", text="Content")
+    
+        tree.column("Line", width=40, anchor="center")
+        tree.column("Origin", width=120, anchor="center")
+        tree.column("Type", width=80, anchor="center")
+        tree.column("Content", width=600)
+    
+        tree.pack(fill="both", expand=True, side="left")
+    
+        # Add scrollbar to tree
+        tree_scrollbar = ttk.Scrollbar(comparison_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=tree_scrollbar.set)
+        tree_scrollbar.pack(side="right", fill="y")
+    
+        # Populate the tree with all unique lines from all files
+        line_num = 0
+    
+        # Add headers for Common Lines (lines in both/all files)
+        if conflict_analysis['common_lines_count'] > 0:
+            tree.insert("", "end", values=("", "COMMON", "HEADER", "Lines that appear in all files"), tags=('header',))
+            for op_type in ['add', 'del', 'update']:
+                for line in conflict_analysis['operations'][op_type]['common']:
+                    line_num += 1
+                    tree.insert("", "end", values=(line_num, "All Files", op_type.upper(), line), tags=(op_type,))
+    
+        # Add headers for lines unique to file 1
+        if conflict_analysis['unique_to_1_count'] > 0:
+            tree.insert("", "end", values=("", entry1['file'], "HEADER", f"Lines unique to {entry1['file']}"), tags=('header',))
+            for op_type in ['add', 'del', 'update']:
+                for line in conflict_analysis['operations'][op_type]['1']:
+                    line_num += 1
+                    tree.insert("", "end", values=(line_num, entry1['file'], op_type.upper(), line), tags=(op_type,))
+    
+        # Add headers for lines unique to file 2
+        if conflict_analysis['unique_to_2_count'] > 0 and entry2 is not None:
+            tree.insert("", "end", values=("", entry2['file'], "HEADER", f"Lines unique to {entry2['file']}"), tags=('header',))
+            for op_type in ['add', 'del', 'update']:
+                for line in conflict_analysis['operations'][op_type]['2']:
+                    line_num += 1
+                    tree.insert("", "end", values=(line_num, entry2['file'], op_type.upper(), line), tags=(op_type,))
+    
+        # Add styles for the tree rows
+        tree.tag_configure('header', background='lightgrey', font=('Helvetica', 10, 'bold'))
+        tree.tag_configure('add', background='#e6ffe6')  # Light green
+        tree.tag_configure('del', background='#ffe6e6')  # Light red
+        tree.tag_configure('update', background='#e6e6ff')  # Light blue
+    
+        # Tab 3: Manual Edit
+        manual_frame = ttk.Frame(notebook)
+        notebook.add(manual_frame, text="Manual Edit")
+    
+        # Instructions
+        tk.Label(
+            manual_frame,
+            text="You can manually edit the combined content here:",
+            anchor="w"
+        ).pack(fill="x", padx=10, pady=5)
+    
+        # Manual edit text area
+        manual_text = tk.Text(manual_frame, height=20, width=80)
+        manual_text.pack(fill="both", expand=True, padx=10, pady=5)
+        manual_text.insert("1.0", merged_text)
+    
+        # Add scrollbar to manual edit
+        manual_scrollbar = ttk.Scrollbar(manual_frame, orient="vertical", command=manual_text.yview)
+        manual_text.configure(yscrollcommand=manual_scrollbar.set)
+        manual_scrollbar.pack(side="right", fill="y")
+    
+        # Button frame at the bottom of the window
+        button_frame = tk.Frame(conflict_window)
+        button_frame.pack(fill="x", padx=10, pady=10)
+    
+        def resolve_conflict():
+            choice = option_var.get()
+        
+            resolved_entry = {}
+        
+            if choice == "merge":
+                # Use merged content
+                resolved_entry = {
+                    'change_request': merged_text,
+                    'comment_input': None  # No comments merged for now
+                }
+            elif choice == "manual":
+                # Use manual entry from manual edit tab
+                manual_content = manual_text.get("1.0", "end-1c")
+                resolved_entry = {
+                    'change_request': manual_content,
+                    'comment_input': None
+                }
+            else:
+                # Use the selected entry
+                idx = int(choice)
+                resolved_entry = entries[idx]
+        
+            # Send the resolved entry back to the worker thread
+            result_queue.put(('conflict_resolved', resolved_entry))
+        
+            # Close the dialog
+            conflict_window.destroy()
+    
+        # "Apply Selected Resolution" button
+        resolve_button = tk.Button(
+            button_frame, 
+            text="Apply Selected Resolution", 
+            command=resolve_conflict,
+            width=20,
+            bg="#e6ffe6",  # Light green
+            font=("Helvetica", 10, "bold")
+        )
+        resolve_button.pack(side="right", padx=5)
+    
+        # Cancel button
+        cancel_button = tk.Button(
+            button_frame, 
+            text="Cancel", 
+            command=conflict_window.destroy,
+            width=10
+        )
+        cancel_button.pack(side="right", padx=5)
 
-            self.set_assigned_verification_cells()
 
+
+
+    def analyze_conflicts(self, change_request1, change_request2):
+        """
+        Analyzes two different change request inputs to identify specific conflicts.
+        Returns a dictionary with analysis that can help users understand the conflict.
+    
+        Args:
+            change_request1: First change request string
+            change_request2: Second change request string
+        
+        Returns:
+            Dictionary with conflict analysis
+        """
+        # Split into lines and create sets of lines for each change request
+        lines1 = [line.strip() for line in change_request1.split('\n') if line.strip()]
+        lines2 = [line.strip() for line in change_request2.split('\n') if line.strip()]
+    
+        set1 = set(lines1)
+        set2 = set(lines2)
+    
+        # Find common lines
+        common_lines = set1.intersection(set2)
+    
+        # Find lines unique to each set
+        unique_to_1 = set1 - set2
+        unique_to_2 = set2 - set1
+    
+        # Categorize by operation (ADD, DEL, WCC-VERI-DOC)
+        operations = {
+            'add': {'1': [], '2': [], 'common': []},
+            'del': {'1': [], '2': [], 'common': []},
+            'update': {'1': [], '2': [], 'common': []}
+        }
+    
+        # Process common lines
+        for line in common_lines:
+            if line.startswith('ADD;'):
+                operations['add']['common'].append(line)
+            elif line.startswith('DEL;'):
+                operations['del']['common'].append(line)
+            elif ';' in line and line.startswith('WCC-VERI-DOC-'):
+                operations['update']['common'].append(line)
+    
+        # Process unique lines in set 1
+        for line in unique_to_1:
+            if line.startswith('ADD;'):
+                operations['add']['1'].append(line)
+            elif line.startswith('DEL;'):
+                operations['del']['1'].append(line)
+            elif ';' in line and line.startswith('WCC-VERI-DOC-'):
+                operations['update']['1'].append(line)
+    
+        # Process unique lines in set 2
+        for line in unique_to_2:
+            if line.startswith('ADD;'):
+                operations['add']['2'].append(line)
+            elif line.startswith('DEL;'):
+                operations['del']['2'].append(line)
+            elif ';' in line and line.startswith('WCC-VERI-DOC-'):
+                operations['update']['2'].append(line)
+    
+        # Look for VERIDOC conflicts (same VERIDOC but different operations)
+        veridoc_conflicts = []
+    
+        # Extract all VeriDocs from operations
+        veridocs = {}
+    
+        # Add unique VeriDocs from file 1 updates
+        for line in operations['update']['1']:
+            parts = line.split(';')
+            veridoc = parts[0]
+            if veridoc not in veridocs:
+                veridocs[veridoc] = {'1': [], '2': []}
+            veridocs[veridoc]['1'].append(line)
+    
+        # Add unique VeriDocs from file 2 updates
+        for line in operations['update']['2']:
+            parts = line.split(';')
+            veridoc = parts[0]
+            if veridoc not in veridocs:
+                veridocs[veridoc] = {'1': [], '2': []}
+            veridocs[veridoc]['2'].append(line)
+    
+        # Check for DEL operations on the same VeriDoc
+        for line in operations['del']['1'] + operations['del']['2']:
+            parts = line.split(';')
+            if len(parts) > 1:
+                veridoc = parts[1]
+                if veridoc in veridocs:
+                    # Conflict: trying to update and delete the same VeriDoc
+                    veridoc_conflicts.append({
+                        'veridoc': veridoc,
+                        'conflict_type': 'update_vs_delete',
+                        'lines_1': veridocs[veridoc]['1'],
+                        'lines_2': veridocs[veridoc]['2'],
+                        'del_line': line
+                    })
+    
+        # Check for conflicts in VeriDoc updates (same VeriDoc, different details)
+        for veridoc, data in veridocs.items():
+            if data['1'] and data['2']:
+                # Same VeriDoc is being updated in both files
+                # Compare the updates to see if they're different
+                for line1 in data['1']:
+                    for line2 in data['2']:
+                        if line1 != line2:
+                            veridoc_conflicts.append({
+                                'veridoc': veridoc,
+                                'conflict_type': 'different_updates',
+                                'line_1': line1,
+                                'line_2': line2
+                            })
+    
+        return {
+            'common_lines_count': len(common_lines),
+            'unique_to_1_count': len(unique_to_1),
+            'unique_to_2_count': len(unique_to_2),
+            'operations': operations,
+            'veridoc_conflicts': veridoc_conflicts,
+            # If merged, include all lines from both files (without duplicates)
+            'merged_lines': sorted(list(set1.union(set2)))
+        }
+
+
+
+    def create_updated_subsets(self, result_queue, main_file_path):
+        """
+        Worker function to create updated subsets from the newly combined main file.
+        This is essentially a modified version of create_subsets().
+        """
+        try:
+            import shutil
+            from copy import copy
+            import os
+        
+            # Prompt the user for the PMR number (or use a previously selected one)
+            main_thread_queue = queue.Queue()
+        
+            # Ask for PMR number in the main thread
+            self.root.after(0, lambda: self.prompt_for_pmr_number(main_thread_queue))
+        
+            # Wait for response
+            pmr_number = main_thread_queue.get()
+            if pmr_number is None:
+                result_queue.put(('error', "Operation cancelled. No PMR number provided."))
+                return
+            
+            pmr_folder = os.path.join(self.selected_base_path, f"PMR {pmr_number}")
+        
+            # Create the PMR folder if it doesn't exist
+            if not os.path.exists(pmr_folder):
+                os.makedirs(pmr_folder)
+            
+            # Check if template_file_path is defined
+            if not hasattr(self, 'template_file_path') or not self.template_file_path:
+                # Ask for template in the main thread
+                self.root.after(0, lambda: self.prompt_for_template(main_thread_queue))
+            
+                template_file_path = main_thread_queue.get()
+                if not template_file_path:
+                    result_queue.put(('error', "Operation cancelled. No template file selected."))
+                    return
+                
+                self.template_file_path = template_file_path
+        
+            result_queue.put(('status', "Creating updated subset files..."))
+        
+            # Get the swbs_groups
+            swbs_groups = {
+                'SWBS 000': [
+                    '040-001', '040-002', '040-003', '040-004', '040-005',
+                    '041-001', '041-002', '041-003', '041-004', '041-005', '041-006', 
+                    '042-001', '042-003', '042-004', '042-005', '042-006', '042-007', '042-008', '042-009', '042-010',
+                    '045-001', '045-002', '045-003', 
+                    '068-001', '068-002', '068-003',
+                    '070-001', '070-002', '070-003', '070-004', '070-005', '070-006',
+                    '073-001', '073-002', '073-003', '073-004', '073-005', '073-006', '073-007', '073-008', '073-009', '073-010',
+                    '074-001', 
+                    '076-001', '076-002', '076-003', '076-004',
+                    '077-001', '077-002', '077-003',
+                    '079-001', '079-002', '079-003',
+                    '080-001', '080-002', '080-003', 
+                    '081-001',
+                    '083-001', '083-002', '083-003', '083-004', '083-005', '083-006',
+                    '084-001', '084-002', '084-003',
+                    '085-001', '085-002', '085-003', '085-004', '085-005', '085-006',
+                    '086-001', '086-002', '086-003', '086-004', '086-005', '086-006', '086-007',
+                    '088-001', '088-002', '088-003', '088-004', '088-005', '088-006', '088-007', '088-008',
+                    '092-001', '092-002', '092-003', '092-004',
+                    '094-001', '094-002',
+                    '096-001', '096-002', '096-003', '096-004',
+                    '097-001', '097-002',
+                    '098-001'
+                ],
+                'SWBS 100': [
+                    '100-001', '100-002', '100-003', '100-004', '100-005','100-006','100-007','100-008','100-009','100-010','100-011','100-012', '100-013',
+                    '167-001'
+                ],
+                'SWBS 200': [
+                    '200-001', '200-002', '200-003',
+                    '233-001', '245-001', '245-002', '245-003',
+                    '249-001', '249-002', '249-003', '249-004',
+                    '252-001',
+                    '259-001', '259-002'
+                ],
+                'SWBS 202': [
+                    '202-001','202-002','202-003','202-004','202-005','202-006','202-007','202-008','202-009','202-010','202-011','202-012','202-013','202-014','202-015','202-016'
+                ],
+                'SWBS 300': [
+                    '300-001', '300-002', '300-003', '300-006', '300-007','300-008', '300-009', '300-010', '300-011', 
+                    '302-001',
+                    '303-001',
+                    '310-001',
+                    '313-001',
+                    '314-001', '314-002',
+                    '320-001', '320-002', '320-003', '320-004',
+                    '324-001', '324-002',
+                    '330-001', '330-002'
+                ],
+                'SWBS 400': [
+                    '400-001', '400-002', '400-003', '400-004', '400-005', '400-006', '400-007', '400-008', '400-009', '400-010', '400-011','400-012',
+                    '402-001', '402-002',
+                    '405-001',
+                    '407-001',
+                    '420-001',
+                    '428-001',
+                    '432-001', '432-002'
+                    '435-001', 
+                    '440-001' 
+                ],
+                'SWBS 500': [
+                    '504-001',
+                    '506-001', '506-002',
+                    '507-001',
+                    '508-001',
+                    '512-001', '512-002', '512-003',
+                    '521-001', '521-002', '521-002', '521-003', '521-004',
+                    '528-001', '528-002',
+                    '529-001', '529-002', '529-003', '529-004',
+                    '532-001', '532-002', '532-003', '532-004',
+                    '541-001', '541-002',
+                    '549-001', 
+                    '551-001', '551-002',
+                    '555-001', '555-002', '555-003', '555-004',
+                    '580-001', '580-002', '580-003', '580-004', 
+                    '581-001', '581-002', '581-003', '581-004', 
+                    '582-001', '582-001',
+                    '583-001', '583-002', '583-003', '583-004', 
+                    '589-001', '589-002',
+                    '593-001', '593-002', '593-003','593-004', '593-005'
+                ],
+                'SWBS 600': [
+                    '602-001', 
+                    '604-001',
+                    '621-001',
+                    '625-001',
+                    '630-001', 
+                    '631-001',
+                    '633-001',
+                    '634-001',
+                    '635-001',
+                    '640-001', '640-002'
+                ]
+            }
+        
+            # Create a set of all DI Numbers for quick lookup
+            all_di_numbers = set()
+            di_number_to_swbs = {}
+            for swbs, di_numbers in swbs_groups.items():
+                for di_number in di_numbers:
+                    all_di_numbers.add(di_number)
+                    di_number_to_swbs[di_number] = swbs
+        
+            # Copy the template file to create subset files
+            di_number_to_file_path = {}
+            for swbs, di_numbers in swbs_groups.items():
+                swbs_number = swbs.replace('SWBS ', '')
+                swbs_folder = os.path.join(pmr_folder, f"{swbs_number} SWBS")
+                if not os.path.exists(swbs_folder):
+                    os.makedirs(swbs_folder)
+            
+                for di_number in di_numbers:
+                    filename = f"{di_number} - Revision X - RTVM Subset.xlsx"
+                    dest_file_path = os.path.join(swbs_folder, filename)
+                
+                    try:
+                        shutil.copyfile(self.template_file_path, dest_file_path)
+                        di_number_to_file_path[di_number] = dest_file_path
+                    except Exception as e:
+                        result_queue.put(('detail', f"Error copying template for {di_number}: {str(e)}"))
+        
+            # Now, process the main Excel file
+            try:
+                wb_main = load_workbook(filename=main_file_path)
+                if 'RTVM' not in wb_main.sheetnames:
+                    result_queue.put(('error', "The sheet 'RTVM' was not found in the main Excel file."))
+                    return
+                
+                ws_main = wb_main['RTVM']
+            
+                total_rows = ws_main.max_row - 1
+                result_queue.put(('detail', f"Processing {total_rows} rows from main file..."))
+            
+                di_number_to_wb = {}
+                di_number_to_ws = {}
+                di_number_to_next_row = {}
+            
+                for idx, row in enumerate(ws_main.iter_rows(min_row=2, values_only=False), start=1):
+                    if idx % 50 == 0 or idx == total_rows:
+                        result_queue.put(('detail', f"Processed row {idx}/{total_rows}"))
+                        result_queue.put(('progress', (idx, total_rows)))
+                
+                    cell_f = row[5]  # Column F - Assigned Verification Documents
+                    cell_value = cell_f.value
+                
+                    if cell_value:
+                        entries = cell_value.split('______________________')
+                        di_numbers_in_cell = set()
+                        for entry in entries:
+                            entry = entry.strip()
+                            if not entry:
+                                continue
+                            lines = entry.split('\n')
+                            for line in lines:
+                                line = line.strip()
+                                if line.startswith('DI Number:'):
+                                    di_number = line[len('DI Number:'):].strip()
+                                    if di_number:
+                                        di_numbers_in_cell.add(di_number)
+                    
+                        for di_number in di_numbers_in_cell:
+                            if di_number in all_di_numbers:
+                                if di_number not in di_number_to_wb:
+                                    subset_file_path = di_number_to_file_path[di_number]
+                                    wb_subset = load_workbook(filename=subset_file_path)
+                                    if 'RTVM' in wb_subset.sheetnames:
+                                        ws_subset = wb_subset['RTVM']
+                                    else:
+                                        ws_subset = wb_subset.active
+                                    di_number_to_wb[di_number] = wb_subset
+                                    di_number_to_ws[di_number] = ws_subset
+                                    di_number_to_next_row[di_number] = 2
+                                else:
+                                    wb_subset = di_number_to_wb[di_number]
+                                    ws_subset = di_number_to_ws[di_number]
+                            
+                                next_row = di_number_to_next_row[di_number]
+                            
+                                for cell in row:
+                                    new_cell = ws_subset.cell(row=next_row, column=cell.column, value=cell.value)
+                                    if cell.has_style:
+                                        new_cell.font = copy(cell.font)
+                                        new_cell.border = copy(cell.border)
+                                        new_cell.fill = copy(cell.fill)
+                                        new_cell.number_format = copy(cell.number_format)
+                                        new_cell.protection = copy(cell.protection)
+                                        new_cell.alignment = copy(cell.alignment)
+                                    if cell.hyperlink:
+                                        new_cell.hyperlink = copy(cell.hyperlink)
+                                    if cell.comment:
+                                        new_cell.comment = copy(cell.comment)
+                            
+                                di_number_to_next_row[di_number] += 1
+            
+                # Save all subset workbooks
+                result_queue.put(('status', "Saving updated subset files..."))
+            
+                saved_count = 0
+                for di_number, wb_subset in di_number_to_wb.items():
+                    subset_file_path = di_number_to_file_path[di_number]
+                    try:
+                        wb_subset.save(subset_file_path)
+                        wb_subset.close()
+                        saved_count += 1
+                        if saved_count % 10 == 0:
+                            result_queue.put(('detail', f"Saved {saved_count} subset files..."))
+                    except Exception as e:
+                        result_queue.put(('detail', f"Failed to save subset file for DI Number {di_number}: {e}"))
+        
+            except Exception as e:
+                result_queue.put(('error', f"Error processing main file: {str(e)}"))
+                return
+            
+            # Signal completion
+            result_queue.put(('all_complete', None))
+        
+        except Exception as e:
+            result_queue.put(('error', f"Error creating updated subsets: {str(e)}"))
+
+
+    def prompt_for_pmr_number(self, response_queue):
+        """Prompt for PMR number in the main thread and put result in the queue."""
+        pmr_number = simpledialog.askinteger("PMR Number", "Enter the PMR number:")
+        response_queue.put(pmr_number)  # May be None if the user cancels
+
+    def prompt_for_template(self, response_queue):
+        """Prompt for template file in the main thread and put result in the queue."""
+        template_file_path = filedialog.askopenfilename(
+            title="Select Template Excel File",
+            filetypes=[("Excel files", "*.xls;*.xlsx")]
+        )
+        response_queue.put(template_file_path)  # May be empty string if the user cancels
 
     def select_base_location(self):
             # Allow the user to select a folder where PMR-related files and subsets will be saved
@@ -1394,41 +2465,98 @@ class RTVMApp:
         # Now, group DI Numbers into SWBS groups as provided
         swbs_groups = {
             'SWBS 000': [
-                '040-001', '042-001', '042-003', '042-005', '045-001',
-                '068-001', '068-002', '068-003', '070-001', '073-001',
-                '073-003', '073-006', '073-007', '073-008', '073-009',
-                '076-002', '077-001', '077-002', '083-002', '085-004',
-                '086-003', '088-001', '088-002', '088-005', '088-007',
-                '092-001', '096-004'
+                '040-001', '040-002', '040-003', '040-004', '040-005',
+                '041-001', '041-002', '041-003', '041-004', '041-005', '041-006', 
+                '042-001', '042-003', '042-004', '042-005', '042-006', '042-007', '042-008', '042-009', '042-010',
+                '045-001', '045-002', '045-003', 
+                '068-001', '068-002', '068-003',
+                '070-001', '070-002', '070-003', '070-004', '070-005', '070-006',
+                '073-001', '073-002', '073-003', '073-004', '073-005', '073-006', '073-007', '073-008', '073-009', '073-010',
+                '074-001', 
+                '076-001', '076-002', '076-003', '076-004',
+                '077-001', '077-002', '077-003',
+                '079-001', '079-002', '079-003',
+                '080-001', '080-002', '080-003', 
+                '081-001',
+                '083-001', '083-002', '083-003', '083-004', '083-005', '083-006',
+                '084-001', '084-002', '084-003',
+                '085-001', '085-002', '085-003', '085-004', '085-005', '085-006',
+                '086-001', '086-002', '086-003', '086-004', '086-005', '086-006', '086-007',
+                '088-001', '088-002', '088-003', '088-004', '088-005', '088-006', '088-007', '088-008',
+                '092-001', '092-002', '092-003', '092-004',
+                '094-001', '094-002',
+                '096-001', '096-002', '096-003', '096-004',
+                '097-001', '097-002',
+                '098-001'
             ],
             'SWBS 100': [
-                '100-001', '100-002', '100-004', '100-006', '100-010',
-                '100-011', '100-012', '100-013'
+                '100-001', '100-002', '100-003', '100-004', '100-005','100-006','100-007','100-008','100-009','100-010','100-011','100-012', '100-013',
+                '167-001'
             ],
             'SWBS 200': [
-                '200-001', '200-003', '233-001', '245-001', '245-002',
-                '245-003', '249-001', '249-002', '249-003', '249-004',
-                '259-001'
+                '200-001', '200-002', '200-003',
+                '233-001', '245-001', '245-002', '245-003',
+                '249-001', '249-002', '249-003', '249-004',
+                '252-001',
+                '259-001', '259-002'
             ],
             'SWBS 202': [
-                '202-012'
+                '202-001','202-002','202-003','202-004','202-005','202-006','202-007','202-008','202-009','202-010','202-011','202-012','202-013','202-014','202-015','202-016'
             ],
             'SWBS 300': [
-                '300-001', '300-002', '300-003', '300-006', '300-007',
-                '300-008', '300-009', '300-010', '300-011', '302-001',
-                '310-001', '320-003', '303-001'
+                '300-001', '300-002', '300-003', '300-006', '300-007','300-008', '300-009', '300-010', '300-011', 
+                '302-001',
+                '303-001',
+                '310-001',
+                '313-001',
+                '314-001', '314-002',
+                '320-001', '320-002', '320-003', '320-004',
+                '324-001', '324-002',
+                '330-001', '330-002'
             ],
             'SWBS 400': [
-                '400-001', '400-002', '400-003', '400-010', '400-011',
-                '402-001', '402-002', '405-001', '407-001', '428-001',
-                '432-001', '432-002', '435-001', '436-002', '440-001'
+                '400-001', '400-002', '400-003', '400-004', '400-005', '400-006', '400-007', '400-008', '400-009', '400-010', '400-011','400-012',
+                '402-001', '402-002',
+                '405-001',
+                '407-001',
+                '420-001',
+                '428-001',
+                '432-001', '432-002'
+                '435-001', 
+                '440-001' 
             ],
             'SWBS 500': [
-                '508-001', '555-001', '580-001', '580-004', '583-001',
-                '589-002', '593-002', '593-005','521-003'
+                '504-001',
+                '506-001', '506-002',
+                '507-001',
+                '508-001',
+                '512-001', '512-002', '512-003',
+                '521-001', '521-002', '521-002', '521-003', '521-004',
+                '528-001', '528-002',
+                '529-001', '529-002', '529-003', '529-004',
+                '532-001', '532-002', '532-003', '532-004',
+                '541-001', '541-002',
+                '549-001', 
+                '551-001', '551-002',
+                '555-001', '555-002', '555-003', '555-004',
+                '580-001', '580-002', '580-003', '580-004', 
+                '581-001', '581-002', '581-003', '581-004', 
+                '582-001', '582-001',
+                '583-001', '583-002', '583-003', '583-004', 
+                '589-001', '589-002',
+                '593-001', '593-002', '593-003','593-004', '593-005'
             ],
             'SWBS 600': [
-                '602-001', '604-001', '634-001', '640-002'
+                '602-001', 
+                '604-001',
+                '621-001',
+                '625-001',
+                '630-001', 
+                '631-001',
+                '633-001',
+                '634-001',
+                '635-001',
+                '640-001', '640-002'
             ]
         }
 
@@ -1667,7 +2795,6 @@ class RTVMApp:
             canvas_swbs_di = FigureCanvasTkAgg(fig_swbs_di, master=di_frame_swbs)
             canvas_swbs_di.draw()
             canvas_swbs_di.get_tk_widget().pack(fill='both', expand=True)
-
             
     def export_photos_of_report(self):
         if not hasattr(self, 'figures_data') or not self.figures_data:
@@ -1755,8 +2882,6 @@ class RTVMApp:
 
         messagebox.showinfo("Export Completed", f"All charts have been exported to {pmr_folder}")
 
-
-
     def create_subsets(self):
         import shutil
         from openpyxl import load_workbook
@@ -1805,44 +2930,101 @@ class RTVMApp:
 
         # Define the SWBS groups and DI Numbers (unchanged)
         swbs_groups = {
-            'SWBS 000': [
-                '040-001', '042-001', '042-003', '042-005', '045-001',
-                '068-001', '068-002', '068-003', '070-001', '073-001',
-                '073-003', '073-006', '073-007', '073-008', '073-009',
-                '076-002', '077-001', '077-002', '083-002', '085-004',
-                '086-003', '088-001', '088-002', '088-005', '088-007',
-                '092-001', '096-004'
-            ],
-            'SWBS 100': [
-                '100-001', '100-002', '100-004', '100-006', '100-010',
-                '100-011', '100-012', '100-013'
-            ],
-            'SWBS 200': [
-                '200-001', '200-003', '233-001', '245-001', '245-002',
-                '245-003', '249-001', '249-002', '249-003', '249-004',
-                '259-001'
-            ],
-            'SWBS 202': [
-                '202-012'
-            ],
-            'SWBS 300': [
-                '300-001', '300-002', '300-003', '300-006', '300-007',
-                '300-008', '300-009', '300-010', '300-011', '302-001',
-                '310-001', '320-003', '303-001'
-            ],
-            'SWBS 400': [
-                '400-001', '400-002', '400-003', '400-010', '400-011',
-                '402-001', '402-002', '405-001', '407-001', '428-001',
-                '432-001', '432-002', '435-001', '436-002', '440-001'
-            ],
-            'SWBS 500': [
-                '508-001', '555-001', '580-001', '580-004', '583-001',
-                '589-002', '593-002', '593-005','521-003'
-            ],
-            'SWBS 600': [
-                '602-001', '604-001', '634-001', '640-002'
-            ]
-        }
+                    'SWBS 000': [
+                        '040-001', '040-002', '040-003', '040-004', '040-005',
+                        '041-001', '041-002', '041-003', '041-004', '041-005', '041-006', 
+                        '042-001', '042-003', '042-004', '042-005', '042-006', '042-007', '042-008', '042-009', '042-010',
+                        '045-001', '045-002', '045-003', 
+                        '068-001', '068-002', '068-003',
+                        '070-001', '070-002', '070-003', '070-004', '070-005', '070-006',
+                        '073-001', '073-002', '073-003', '073-004', '073-005', '073-006', '073-007', '073-008', '073-009', '073-010',
+                        '074-001', 
+                        '076-001', '076-002', '076-003', '076-004',
+                        '077-001', '077-002', '077-003',
+                        '079-001', '079-002', '079-003',
+                        '080-001', '080-002', '080-003', 
+                        '081-001',
+                        '083-001', '083-002', '083-003', '083-004', '083-005', '083-006',
+                        '084-001', '084-002', '084-003',
+                        '085-001', '085-002', '085-003', '085-004', '085-005', '085-006',
+                        '086-001', '086-002', '086-003', '086-004', '086-005', '086-006', '086-007',
+                        '088-001', '088-002', '088-003', '088-004', '088-005', '088-006', '088-007', '088-008',
+                        '092-001', '092-002', '092-003', '092-004',
+                        '094-001', '094-002',
+                        '096-001', '096-002', '096-003', '096-004',
+                        '097-001', '097-002',
+                        '098-001'
+                    ],
+                    'SWBS 100': [
+                        '100-001', '100-002', '100-003', '100-004', '100-005','100-006','100-007','100-008','100-009','100-010','100-011','100-012', '100-013',
+                        '167-001'
+                    ],
+                    'SWBS 200': [
+                        '200-001', '200-002', '200-003',
+                        '233-001', '245-001', '245-002', '245-003',
+                        '249-001', '249-002', '249-003', '249-004',
+                        '252-001',
+                        '259-001', '259-002'
+                    ],
+                    'SWBS 202': [
+                        '202-001','202-002','202-003','202-004','202-005','202-006','202-007','202-008','202-009','202-010','202-011','202-012','202-013','202-014','202-015','202-016'
+                    ],
+                    'SWBS 300': [
+                        '300-001', '300-002', '300-003', '300-006', '300-007','300-008', '300-009', '300-010', '300-011', 
+                        '302-001',
+                        '303-001',
+                        '310-001',
+                        '313-001',
+                        '314-001', '314-002',
+                        '320-001', '320-002', '320-003', '320-004',
+                        '324-001', '324-002',
+                        '330-001', '330-002'
+                    ],
+                    'SWBS 400': [
+                        '400-001', '400-002', '400-003', '400-004', '400-005', '400-006', '400-007', '400-008', '400-009', '400-010', '400-011','400-012',
+                        '402-001', '402-002',
+                        '405-001',
+                        '407-001',
+                        '420-001',
+                        '428-001',
+                        '432-001', '432-002'
+                        '435-001', 
+                        '440-001' 
+                    ],
+                    'SWBS 500': [
+                        '504-001',
+                        '506-001', '506-002',
+                        '507-001',
+                        '508-001',
+                        '512-001', '512-002', '512-003',
+                        '521-001', '521-002', '521-002', '521-003', '521-004',
+                        '528-001', '528-002',
+                        '529-001', '529-002', '529-003', '529-004',
+                        '532-001', '532-002', '532-003', '532-004',
+                        '541-001', '541-002',
+                        '549-001', 
+                        '551-001', '551-002',
+                        '555-001', '555-002', '555-003', '555-004',
+                        '580-001', '580-002', '580-003', '580-004', 
+                        '581-001', '581-002', '581-003', '581-004', 
+                        '582-001', '582-001',
+                        '583-001', '583-002', '583-003', '583-004', 
+                        '589-001', '589-002',
+                        '593-001', '593-002', '593-003','593-004', '593-005'
+                    ],
+                    'SWBS 600': [
+                        '602-001', 
+                        '604-001',
+                        '621-001',
+                        '625-001',
+                        '630-001', 
+                        '631-001',
+                        '633-001',
+                        '634-001',
+                        '635-001',
+                        '640-001', '640-002'
+                    ]
+                }
 
         def process_data(progress_queue):
             print("Starting recombination process...")
@@ -2004,7 +3186,6 @@ class RTVMApp:
             progress_window.after(100, update_progress)
 
         update_progress()
-
 
 
     def recombine_subsets(self):
@@ -2280,9 +3461,6 @@ class RTVMApp:
             progress_window.after(100, update_progress)
 
         update_progress()
-
-
-
 
 
     def merge_single_subset(self):
@@ -2939,6 +4117,11 @@ class RTVMApp:
 
     def navigate_cells(self, direction):
         if self.df is None:
+            messagebox.showinfo("No Data", "No file loaded. Please upload an Excel file first.")
+            return
+        
+        if len(self.df) == 0:
+            messagebox.showinfo("Empty File", "This file contains no data rows to navigate.")
             return
 
         # Instead of a blocking save, run the save operation in a background thread.
@@ -3256,7 +4439,7 @@ class RTVMApp:
         if values:
             obj_id = values[0]  # VeriDoc Number (Object Identifier)
             # Create deletion pattern
-            del_pattern = f"DEL; {obj_id}"
+            del_pattern = f"DEL;{obj_id}"
 
             # Save the deletion pattern to Excel
             self.save_deletion_to_excel(del_pattern)
@@ -5008,35 +6191,70 @@ class RTVMApp:
 
 
     def update_ui_after_navigation(self):
-            if self.df is not None and self.current_row < len(self.df):
-                # Get data from column F (index 5)
-                data = self.df.iloc[self.current_row, 5]
-                # Update Specification Text Box with content from column B (index 1)
-                spec_text = self.df.iloc[self.current_row, 1]
-                if pd.isna(spec_text):
-                    spec_text = ""
-                elif not isinstance(spec_text, str):
-                    spec_text = str(spec_text)
-                self.spec_text_box.config(state=tk.NORMAL)
-                self.spec_text_box.delete("1.0", tk.END)
-                self.spec_text_box.insert(tk.END, spec_text)
-                self.spec_text_box.config(state=tk.DISABLED)
-                # Check if data is NaN or not a string
-                if pd.isna(data):
-                    data = ""
-                elif not isinstance(data, str):
-                    data = str(data)
-                # Run extract_info automatically
-                self.extract_info(data)
-                # Update the Proposed Changes Table
-                self.update_proposed_changes_table()
-                # **Update the Comment History Table**
-                self.update_comment_history_table()
-                # Update the progress bar highlight
-                self.update_progress_bar_highlight()
-            else:
-                messagebox.showerror(
-                    "Error", "No data available at this row.")
+        # First check if DataFrame exists and has rows
+        if self.df is None or len(self.df) == 0:
+            # Clear UI elements for empty file
+            self.spec_text_box.config(state=tk.NORMAL)
+            self.spec_text_box.delete("1.0", tk.END)
+            self.spec_text_box.insert(tk.END, "No data available in this file.")
+            self.spec_text_box.config(state=tk.DISABLED)
+        
+            # Clear all tables
+            self.table.delete(*self.table.get_children())
+            self.comment_table.delete(*self.comment_table.get_children())
+            self.proposed_changes_table.delete(*self.proposed_changes_table.get_children())
+            self.comment_history_table.delete(*self.comment_history_table.get_children())
+            self.gov_comment_history_table.delete(*self.gov_comment_history_table.get_children())
+        
+            messagebox.showinfo("Empty File", "This file contains no data rows to navigate.")
+            return
+
+        # Check if current_row is valid (within bounds)
+        if self.current_row < 0:
+            self.current_row = 0
+        elif self.current_row >= len(self.df):
+            self.current_row = max(0, len(self.df) - 1)
+
+        # Now proceed with the original function if we have valid data
+        try:
+            # Get data from column F (index 5)
+            data = self.df.iloc[self.current_row, 5]
+            # Update Specification Text Box with content from column B (index 1)
+            spec_text = self.df.iloc[self.current_row, 1]
+            if pd.isna(spec_text):
+                spec_text = ""
+            elif not isinstance(spec_text, str):
+                spec_text = str(spec_text)
+            self.spec_text_box.config(state=tk.NORMAL)
+            self.spec_text_box.delete("1.0", tk.END)
+            self.spec_text_box.insert(tk.END, spec_text)
+            self.spec_text_box.config(state=tk.DISABLED)
+            # Check if data is NaN or not a string
+            if pd.isna(data):
+                data = ""
+            elif not isinstance(data, str):
+                data = str(data)
+            # Run extract_info automatically
+            self.extract_info(data)
+            # Update the Proposed Changes Table
+            self.update_proposed_changes_table()
+            # **Update the Comment History Table**
+            self.update_comment_history_table()
+            # Update the progress bar highlight
+            self.update_progress_bar_highlight()
+        except (IndexError, KeyError) as e:
+            # Handle case where column structure doesn't match expectations
+            self.spec_text_box.config(state=tk.NORMAL)
+            self.spec_text_box.delete("1.0", tk.END)
+            self.spec_text_box.insert(tk.END, f"Error accessing data: {str(e)}\nThe file structure may not be compatible.")
+            self.spec_text_box.config(state=tk.DISABLED)
+        
+            # Clear all tables
+            self.table.delete(*self.table.get_children())
+            self.comment_table.delete(*self.comment_table.get_children())
+            self.proposed_changes_table.delete(*self.proposed_changes_table.get_children())
+            self.comment_history_table.delete(*self.comment_history_table.get_children())
+            self.gov_comment_history_table.delete(*self.gov_comment_history_table.get_children())
 
     def update_comment_history_table(self):
         # Clear the table
