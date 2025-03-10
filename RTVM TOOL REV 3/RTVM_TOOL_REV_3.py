@@ -1270,9 +1270,50 @@ class RTVMApp:
 
 ### Start of RTVM Subsets tool pack ################################################################################################################################################################################################################################
 
-    def open_rvtm_subset_management_window(self):
+
+
+
+
+
+    import os
+    import re
+    import queue
+    import json
+    import threading
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+    from datetime import datetime
+    from openpyxl import load_workbook, Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    import tkinter as tk
+    from tkinter import ttk, messagebox, filedialog
+
+    def enhance_rvtm_subset_management_window(self):
+        """
+        Enhanced version of the RTVM Subset Management window with status reporting
+        """
         self.rvtm_subset_window = tk.Toplevel(self.root)
         self.rvtm_subset_window.title("RTVM Subset Management")
+        self.rvtm_subset_window.geometry("900x700")  # Increased window size
+
+        # Split the window into two main frames - top commands and bottom results
+        top_frame = tk.Frame(self.rvtm_subset_window)
+        top_frame.pack(fill='x', padx=10, pady=10)
+    
+        notebook = ttk.Notebook(self.rvtm_subset_window)
+        notebook.pack(fill='both', expand=True, padx=10, pady=5)
+    
+        # First tab: Management Operations
+        operations_frame = ttk.Frame(notebook)
+        notebook.add(operations_frame, text='Management Operations')
+    
+        # Second tab: Subset Status
+        status_frame = ttk.Frame(notebook)
+        notebook.add(status_frame, text='Subset Status')
+    
+        # Third tab: Subset Analytics
+        analytics_frame = ttk.Frame(notebook)
+        notebook.add(analytics_frame, text='Analytics')
 
         explanation = (
             "This RTVM Subset Management tool allows you to:\n"
@@ -1285,59 +1326,1716 @@ class RTVMApp:
             "The data is taken from the currently loaded main RTVM file.\n"
             "Please select a base location first."
         )
-        tk.Label(self.rvtm_subset_window, text=explanation, justify="left").pack(pady=10, padx=10)
-
-        top_frame = tk.Frame(self.rvtm_subset_window)
-        top_frame.pack(fill='x', padx=10, pady=10)
+    
+        tk.Label(top_frame, text=explanation, justify="left").pack(pady=10, padx=10)
 
         # Button to select the base location
         select_location_button = tk.Button(
             top_frame, text="Select Base Location", command=self.select_base_location
         )
-        select_location_button.grid(row=0, column=0, padx=5, pady=5)
+        select_location_button.pack(side="left", padx=5, pady=5)
 
         # Display the currently loaded file name
-        tk.Label(top_frame, text="Current (New) File:", anchor='w').grid(row=0, column=1, sticky='w')
+        tk.Label(top_frame, text="Current File:", anchor='w').pack(side="left")
         self.file_name_var = tk.StringVar(value=self.excel_file_path if self.excel_file_path else "No File Loaded")
-        tk.Label(top_frame, textvariable=self.file_name_var, width=50, anchor='w').grid(row=0, column=2, padx=5, pady=5, sticky='ew')
+        tk.Label(top_frame, textvariable=self.file_name_var, width=50, anchor='w').pack(side="left", padx=5, pady=5)
+
+        # === OPERATIONS TAB ===
+        operations_buttons_frame = tk.Frame(operations_frame)
+        operations_buttons_frame.pack(fill='x', padx=10, pady=10)
 
         # Create Summary Report Button
         self.create_report_button = tk.Button(
-            top_frame, text="Create Summary Report", command=self.create_summary_report
+            operations_buttons_frame, text="Create Summary Report", command=self.create_summary_report
         )
-        self.create_report_button.grid(row=0, column=3, padx=5, pady=5)
+        self.create_report_button.grid(row=0, column=0, padx=5, pady=5)
 
         # Export Photos Button
         self.export_photos_button = tk.Button(
-            top_frame, text="Export Photos of Report", command=self.export_photos_of_report
+            operations_buttons_frame, text="Export Photos of Report", command=self.export_photos_of_report
         )
-        self.export_photos_button.grid(row=0, column=4, padx=5, pady=5)
+        self.export_photos_button.grid(row=0, column=1, padx=5, pady=5)
 
         # Create Subsets Button
         self.create_subsets_button = tk.Button(
-            top_frame, text="Create Subsets", command=self.create_subsets
+            operations_buttons_frame, text="Create Subsets", command=self.create_subsets
         )
-        self.create_subsets_button.grid(row=0, column=5, padx=5, pady=5)
+        self.create_subsets_button.grid(row=0, column=2, padx=5, pady=5)
 
         # Recombine Subsets Button
         self.recombine_subsets_button = tk.Button(
-            top_frame, text="Recombine Subsets", command=self.recombine_subsets
+            operations_buttons_frame, text="Recombine Subsets", command=self.recombine_subsets
         )
-        self.recombine_subsets_button.grid(row=0, column=6, padx=5, pady=5)
+        self.recombine_subsets_button.grid(row=0, column=3, padx=5, pady=5)
 
         # Merge Single Subset Button
         self.merge_single_subset_button = tk.Button(
-            top_frame, text="Merge Single Subset", command=self.merge_single_subset
+            operations_buttons_frame, text="Merge Single Subset", command=self.merge_single_subset
         )
-        self.merge_single_subset_button.grid(row=0, column=7, padx=5, pady=5)
-    
+        self.merge_single_subset_button.grid(row=0, column=4, padx=5, pady=5)
+
         # NEW: Add Combine & Update Subsets Button
         self.combine_update_button = tk.Button(
-            top_frame, text="Combine & Update Subsets", command=self.combine_and_update_subsets
+            operations_buttons_frame, text="Combine & Update Subsets", command=self.combine_and_update_subsets
         )
-        self.combine_update_button.grid(row=0, column=8, padx=5, pady=5)
+        self.combine_update_button.grid(row=0, column=5, padx=5, pady=5)
 
+        # === STATUS TAB ===
+        status_top_frame = tk.Frame(status_frame)
+        status_top_frame.pack(fill='x', padx=10, pady=10)
+    
+        # Scan Subsets Button
+        self.scan_subsets_button = tk.Button(
+            status_top_frame, text="Scan Subset Files", command=self.scan_subset_files,
+            bg="#4CAF50", fg="white", font=("Helvetica", 10, "bold")
+        )
+        self.scan_subsets_button.pack(side="left", padx=5, pady=5)
+    
+        # PMR Selection for status tab
+        tk.Label(status_top_frame, text="PMR Number:").pack(side="left", padx=5, pady=5)
+        self.status_pmr_var = tk.StringVar()
+        pmr_entry = tk.Entry(status_top_frame, textvariable=self.status_pmr_var, width=8)
+        pmr_entry.pack(side="left", padx=5, pady=5)
+    
+        # Auto-detect PMRs Button
+        self.detect_pmrs_button = tk.Button(
+            status_top_frame, text="Detect PMRs", command=self.detect_pmrs
+        )
+        self.detect_pmrs_button.pack(side="left", padx=5, pady=5)
+    
+        # Export Status Report Button
+        self.export_status_button = tk.Button(
+            status_top_frame, text="Export Status Report", command=self.export_subset_status_report
+        )
+        self.export_status_button.pack(side="left", padx=5, pady=5)
+    
+        # Create a frame for the subset status table
+        status_table_frame = tk.Frame(status_frame)
+        status_table_frame.pack(fill='both', expand=True, padx=10, pady=5)
+    
+        # Create the subset status table
+        columns = (
+            "Subset", "SWBS", "Modified", "Total Patterns", 
+            "ADD Requests", "DEL Requests", "Detail Updates", 
+            "SAT Status", "UNSAT Status", "Completion %"
+        )
+    
+        self.subset_status_table = ttk.Treeview(
+            status_table_frame, 
+            columns=columns, 
+            show="headings",
+            selectmode="browse"
+        )
+    
+        # Configure column headings and widths
+        for col in columns:
+            self.subset_status_table.heading(col, text=col, command=lambda c=col: self.sort_subset_table(c))
+    
+        self.subset_status_table.column("Subset", width=150)
+        self.subset_status_table.column("SWBS", width=80)
+        self.subset_status_table.column("Modified", width=120)
+        self.subset_status_table.column("Total Patterns", width=90, anchor='e')
+        self.subset_status_table.column("ADD Requests", width=90, anchor='e')
+        self.subset_status_table.column("DEL Requests", width=90, anchor='e')
+        self.subset_status_table.column("Detail Updates", width=90, anchor='e')
+        self.subset_status_table.column("SAT Status", width=80, anchor='e')
+        self.subset_status_table.column("UNSAT Status", width=80, anchor='e')
+        self.subset_status_table.column("Completion %", width=90, anchor='e')
+    
+        # Add scrollbars
+        status_y_scroll = ttk.Scrollbar(status_table_frame, orient="vertical", command=self.subset_status_table.yview)
+        status_x_scroll = ttk.Scrollbar(status_table_frame, orient="horizontal", command=self.subset_status_table.xview)
+        self.subset_status_table.configure(yscrollcommand=status_y_scroll.set, xscrollcommand=status_x_scroll.set)
+    
+        # Pack the table and scrollbars
+        status_y_scroll.pack(side="right", fill="y")
+        status_x_scroll.pack(side="bottom", fill="x")
+        self.subset_status_table.pack(side="left", fill="both", expand=True)
+    
+        # Double-click to open subset file
+        self.subset_status_table.bind("<Double-1>", self.open_selected_subset)
+        # Right-click context menu
+        self.subset_status_table.bind("<Button-3>", self.show_subset_context_menu)
+    
+        # === ANALYTICS TAB ===
+        analytics_top_frame = tk.Frame(analytics_frame)
+        analytics_top_frame.pack(fill='x', padx=10, pady=10)
+    
+        # Generate Analytics Button
+        self.generate_analytics_button = tk.Button(
+            analytics_top_frame, text="Generate Analytics", command=self.generate_subset_analytics
+        )
+        self.generate_analytics_button.pack(side="left", padx=5, pady=5)
+    
+        # Create frame for charts
+        self.analytics_charts_frame = tk.Frame(analytics_frame)
+        self.analytics_charts_frame.pack(fill='both', expand=True, padx=10, pady=5)
+    
+        # Initialize charts area with empty placeholder
+        self.init_analytics_placeholder()
+    
+        # Call this function to set the assigned_verification_cells attribute
         self.set_assigned_verification_cells()
+
+    def show_subset_context_menu(self, event):
+        """Show context menu for subset status table"""
+        # Identify the row under the cursor
+        row_id = self.subset_status_table.identify_row(event.y)
+        if not row_id:
+            return
+    
+        # Select the row
+        self.subset_status_table.selection_set(row_id)
+    
+        # Create context menu
+        context_menu = tk.Menu(self.root, tearoff=0)
+        context_menu.add_command(label="Open Subset", command=lambda: self.open_selected_subset(None))
+        context_menu.add_command(label="Show Folder Location", command=self.show_subset_folder)
+        context_menu.add_separator()
+        context_menu.add_command(label="View Pattern Details", command=self.view_subset_patterns)
+        context_menu.add_command(label="Check for Issues", command=self.check_subset_issues)
+        context_menu.add_separator()
+        context_menu.add_command(label="Mark as Complete", command=lambda: self.mark_subset_status("complete"))
+        context_menu.add_command(label="Mark as In Progress", command=lambda: self.mark_subset_status("in_progress"))
+    
+        # Display the menu
+        context_menu.post(event.x_root, event.y_root)
+
+    def open_selected_subset(self, event):
+        """Open the selected subset file"""
+        selected_items = self.subset_status_table.selection()
+        if not selected_items:
+            return
+    
+        item = selected_items[0]
+        filename = self.subset_status_table.item(item, "values")[0]  # Get the filename from the UI
+    
+        # We now need to find the full path from subset_stats since we're only displaying filenames
+        file_path = None
+        for stat in self.subset_stats:
+            if stat["filename"] == filename:
+                file_path = stat["file_path"]
+                break
+    
+        if not file_path:
+            messagebox.showerror("Error", f"Could not find full path for: {filename}")
+            return
+    
+        try:
+            # Try to open the file with the default application
+            import os
+            os.startfile(file_path)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not open file: {e}")
+
+    def export_subset_status_report(self):
+        """Export the subset status data to Excel"""
+        if not hasattr(self, 'subset_stats') or not self.subset_stats:
+            messagebox.showinfo("No Data", "Please scan subset files first")
+            return
+    
+        # Ask user for save location
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")],
+            initialfile="RTVM_Subset_Status_Report.xlsx"
+        )
+    
+        if not save_path:
+            return
+    
+        try:
+            # Create a new workbook
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Subset Status"
+        
+            # Add headers
+            headers = ["Subset File", "SWBS", "Last Modified", "Total Patterns", 
+                       "ADD Requests", "DEL Requests", "Detail Updates", 
+                       "SAT Status", "UNSAT Status", "Completion %"]
+        
+            for col, header in enumerate(headers, start=1):
+                ws.cell(row=1, column=col, value=header).font = Font(bold=True)
+        
+            # Add data
+            for row, subset in enumerate(self.subset_stats, start=2):
+                ws.cell(row=row, column=1, value=os.path.basename(subset["file_path"]))
+                ws.cell(row=row, column=2, value=subset["swbs"])
+                ws.cell(row=row, column=3, value=subset["modified"])
+                ws.cell(row=row, column=4, value=subset["total_patterns"])
+                ws.cell(row=row, column=5, value=subset["add_requests"])
+                ws.cell(row=row, column=6, value=subset["del_requests"])
+                ws.cell(row=row, column=7, value=subset["detail_updates"])
+                ws.cell(row=row, column=8, value=subset["sat_status"])
+                ws.cell(row=row, column=9, value=subset["unsat_status"])
+            
+                # Format completion percentage
+                completion = subset["completion_pct"]
+                ws.cell(row=row, column=10, value=completion)
+            
+                # Conditional formatting based on completion
+                if completion != "N/A" and completion != "Error":
+                    try:
+                        completion_value = float(completion)
+                        if completion_value >= 90:
+                            ws.cell(row=row, column=10).fill = PatternFill(start_color="a5d6a7", end_color="a5d6a7", fill_type="solid")
+                        elif completion_value >= 50:
+                            ws.cell(row=row, column=10).fill = PatternFill(start_color="fff59d", end_color="fff59d", fill_type="solid")
+                        elif completion_value > 0:
+                            ws.cell(row=row, column=10).fill = PatternFill(start_color="ffcc80", end_color="ffcc80", fill_type="solid")
+                        else:
+                            ws.cell(row=row, column=10).fill = PatternFill(start_color="ef9a9a", end_color="ef9a9a", fill_type="solid")
+                    except ValueError:
+                        pass
+        
+            # Add summary sheet
+            ws_summary = wb.create_sheet(title="Summary")
+        
+            # Add headers
+            summary_headers = ["Metric", "Value"]
+            for col, header in enumerate(summary_headers, start=1):
+                ws_summary.cell(row=1, column=col, value=header).font = Font(bold=True)
+        
+            # Calculate summary statistics
+            total_files = len(self.subset_stats)
+            total_patterns = sum(subset["total_patterns"] for subset in self.subset_stats if isinstance(subset["total_patterns"], int))
+            total_add = sum(subset["add_requests"] for subset in self.subset_stats if isinstance(subset["add_requests"], int))
+            total_del = sum(subset["del_requests"] for subset in self.subset_stats if isinstance(subset["del_requests"], int))
+            total_updates = sum(subset["detail_updates"] for subset in self.subset_stats if isinstance(subset["detail_updates"], int))
+            total_sat = sum(subset["sat_status"] for subset in self.subset_stats if isinstance(subset["sat_status"], int))
+            total_unsat = sum(subset["unsat_status"] for subset in self.subset_stats if isinstance(subset["unsat_status"], int))
+        
+            if total_patterns > 0:
+                overall_completion = (total_sat / total_patterns) * 100
+            else:
+                overall_completion = 0
+        
+            # Add summary data
+            row = 2
+            ws_summary.cell(row=row, column=1, value="Total Subset Files")
+            ws_summary.cell(row=row, column=2, value=total_files)
+        
+            row += 1
+            ws_summary.cell(row=row, column=1, value="Total Patterns")
+            ws_summary.cell(row=row, column=2, value=total_patterns)
+        
+            row += 1
+            ws_summary.cell(row=row, column=1, value="Total ADD Requests")
+            ws_summary.cell(row=row, column=2, value=total_add)
+        
+            row += 1
+            ws_summary.cell(row=row, column=1, value="Total DEL Requests")
+            ws_summary.cell(row=row, column=2, value=total_del)
+        
+            row += 1
+            ws_summary.cell(row=row, column=1, value="Total Detail Updates")
+            ws_summary.cell(row=row, column=2, value=total_updates)
+        
+            row += 1
+            ws_summary.cell(row=row, column=1, value="Total SAT Status")
+            ws_summary.cell(row=row, column=2, value=total_sat)
+        
+            row += 1
+            ws_summary.cell(row=row, column=1, value="Total UNSAT Status")
+            ws_summary.cell(row=row, column=2, value=total_unsat)
+        
+            row += 1
+            ws_summary.cell(row=row, column=1, value="Overall Completion %")
+            ws_summary.cell(row=row, column=2, value=f"{overall_completion:.1f}%")
+        
+            # Calculate completion by SWBS
+            swbs_data = {}
+            for subset in self.subset_stats:
+                swbs = subset["swbs"]
+                if swbs not in swbs_data:
+                    swbs_data[swbs] = {
+                        "total_patterns": 0,
+                        "sat_status": 0
+                    }
+            
+                # Add pattern counts if they're numeric
+                if isinstance(subset["total_patterns"], int):
+                    swbs_data[swbs]["total_patterns"] += subset["total_patterns"]
+                if isinstance(subset["sat_status"], int):
+                    swbs_data[swbs]["sat_status"] += subset["sat_status"]
+        
+            # Add SWBS breakdown section
+            row += 2
+            ws_summary.cell(row=row, column=1, value="Completion by SWBS Group").font = Font(bold=True)
+        
+            for swbs, data in swbs_data.items():
+                row += 1
+                if data["total_patterns"] > 0:
+                    swbs_completion = (data["sat_status"] / data["total_patterns"]) * 100
+                else:
+                    swbs_completion = 0
+            
+                ws_summary.cell(row=row, column=1, value=f"{swbs} Completion %")
+                ws_summary.cell(row=row, column=2, value=f"{swbs_completion:.1f}%")
+            
+                # Conditional formatting
+                if swbs_completion >= 90:
+                    ws_summary.cell(row=row, column=2).fill = PatternFill(start_color="a5d6a7", end_color="a5d6a7", fill_type="solid")
+                elif swbs_completion >= 50:
+                    ws_summary.cell(row=row, column=2).fill = PatternFill(start_color="fff59d", end_color="fff59d", fill_type="solid")
+                elif swbs_completion > 0:
+                    ws_summary.cell(row=row, column=2).fill = PatternFill(start_color="ffcc80", end_color="ffcc80", fill_type="solid")
+                else:
+                    ws_summary.cell(row=row, column=2).fill = PatternFill(start_color="ef9a9a", end_color="ef9a9a", fill_type="solid")
+        
+            # Auto-adjust column widths
+            for sheet in [ws, ws_summary]:
+                for col in sheet.columns:
+                    max_length = 0
+                    column = col[0].column_letter
+                    for cell in col:
+                        if cell.value:
+                            cell_length = len(str(cell.value))
+                            if cell_length > max_length:
+                                max_length = cell_length
+                
+                    adjusted_width = (max_length + 2) * 1.2
+                    sheet.column_dimensions[column].width = adjusted_width
+        
+            # Save the workbook
+            wb.save(save_path)
+            messagebox.showinfo("Export Complete", f"Status report exported to {save_path}")
+    
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export status report: {str(e)}")
+
+    def generate_subset_analytics(self):
+        """Generate analytics charts for subset data"""
+        if not hasattr(self, 'subset_stats') or not self.subset_stats:
+            messagebox.showinfo("No Data", "Please scan subset files first")
+            return
+    
+        # Clear previous charts
+        for widget in self.analytics_charts_frame.winfo_children():
+            widget.destroy()
+    
+        # Create a grid layout for charts
+        analytics_top = tk.Frame(self.analytics_charts_frame)
+        analytics_top.pack(fill='both', expand=True)
+    
+        analytics_bottom = tk.Frame(self.analytics_charts_frame)
+        analytics_bottom.pack(fill='both', expand=True)
+    
+        # Calculate analytics data
+        total_patterns = sum(subset["total_patterns"] for subset in self.subset_stats if isinstance(subset["total_patterns"], int))
+        total_add = sum(subset["add_requests"] for subset in self.subset_stats if isinstance(subset["add_requests"], int))
+        total_del = sum(subset["del_requests"] for subset in self.subset_stats if isinstance(subset["del_requests"], int))
+        total_updates = sum(subset["detail_updates"] for subset in self.subset_stats if isinstance(subset["detail_updates"], int))
+        total_sat = sum(subset["sat_status"] for subset in self.subset_stats if isinstance(subset["sat_status"], int))
+        total_unsat = sum(subset["unsat_status"] for subset in self.subset_stats if isinstance(subset["unsat_status"], int))
+    
+        # Group by SWBS
+        swbs_data = {}
+        for subset in self.subset_stats:
+            swbs = subset["swbs"]
+            if swbs not in swbs_data:
+                swbs_data[swbs] = {
+                    "total_patterns": 0,
+                    "sat_status": 0,
+                    "unsat_status": 0,
+                    "add_requests": 0,
+                    "del_requests": 0,
+                    "detail_updates": 0
+                }
+        
+            # Add numeric values only
+            if isinstance(subset["total_patterns"], int):
+                swbs_data[swbs]["total_patterns"] += subset["total_patterns"]
+            if isinstance(subset["sat_status"], int):
+                swbs_data[swbs]["sat_status"] += subset["sat_status"]
+            if isinstance(subset["unsat_status"], int):
+                swbs_data[swbs]["unsat_status"] += subset["unsat_status"]
+            if isinstance(subset["add_requests"], int):
+                swbs_data[swbs]["add_requests"] += subset["add_requests"]
+            if isinstance(subset["del_requests"], int):
+                swbs_data[swbs]["del_requests"] += subset["del_requests"]
+            if isinstance(subset["detail_updates"], int):
+                swbs_data[swbs]["detail_updates"] += subset["detail_updates"]
+    
+        # Chart 1: Pattern Types Distribution (Pie Chart)
+        fig1 = plt.Figure(figsize=(5, 4), dpi=100)
+        ax1 = fig1.add_subplot(111)
+    
+        # Data for pie chart
+        labels = ['ADD Requests', 'DEL Requests', 'Detail Updates']
+        sizes = [total_add, total_del, total_updates]
+        colors = ['#ff9999','#66b3ff','#99ff99']
+        explode = (0.1, 0, 0)  # Explode ADD wedge
+    
+        # Plot pie chart
+        ax1.pie(sizes, explode=explode, labels=labels, colors=colors, autopct='%1.1f%%', shadow=True, startangle=90)
+        ax1.axis('equal')  # Equal aspect ratio ensures that pie is drawn as a circle
+        ax1.set_title('Pattern Types Distribution')
+    
+        # Embed in canvas
+        canvas1 = FigureCanvasTkAgg(fig1, master=analytics_top)
+        canvas1.draw()
+        canvas1.get_tk_widget().pack(side='left', fill='both', expand=True)
+    
+        # Chart 2: Status Distribution (Pie Chart)
+        fig2 = plt.Figure(figsize=(5, 4), dpi=100)
+        ax2 = fig2.add_subplot(111)
+    
+        # Data for pie chart
+        labels2 = ['SAT', 'UNSAT']
+        sizes2 = [total_sat, total_unsat]
+        colors2 = ['#99ff99', '#ff9999']
+    
+        # Plot pie chart
+        ax2.pie(sizes2, labels=labels2, colors=colors2, autopct='%1.1f%%', shadow=True, startangle=90)
+        ax2.axis('equal')
+        ax2.set_title('Status Distribution')
+    
+        # Embed in canvas
+        canvas2 = FigureCanvasTkAgg(fig2, master=analytics_top)
+        canvas2.draw()
+        canvas2.get_tk_widget().pack(side='left', fill='both', expand=True)
+    
+        # Chart 3: Completion by SWBS (Bar Chart)
+        fig3 = plt.Figure(figsize=(5, 4), dpi=100)
+        ax3 = fig3.add_subplot(111)
+    
+        # Prepare data
+        swbs_names = []
+        completion_rates = []
+    
+        for swbs, data in swbs_data.items():
+            swbs_names.append(swbs)
+            if data["total_patterns"] > 0:
+                completion = (data["sat_status"] / data["total_patterns"]) * 100
+            else:
+                completion = 0
+            completion_rates.append(completion)
+    
+        # Sort data for better visualization
+        sorted_data = sorted(zip(swbs_names, completion_rates), key=lambda x: x[1], reverse=True)
+        swbs_names, completion_rates = zip(*sorted_data) if sorted_data else ([], [])
+    
+        # Create bars
+        bars = ax3.bar(swbs_names, completion_rates, color='skyblue')
+    
+        # Add labels and title
+        ax3.set_xlabel('SWBS Group')
+        ax3.set_ylabel('Completion %')
+        ax3.set_title('Completion by SWBS Group')
+    
+        # Adjust layout
+        fig3.tight_layout()
+    
+        # Add value labels on top of bars
+        for bar in bars:
+            height = bar.get_height()
+            ax3.text(
+                bar.get_x() + bar.get_width()/2., 
+                height + 1,
+                f'{height:.1f}%',
+                ha='center', 
+                va='bottom',
+                rotation=0
+            )
+    
+        # Embed in canvas
+        canvas3 = FigureCanvasTkAgg(fig3, master=analytics_bottom)
+        canvas3.draw()
+        canvas3.get_tk_widget().pack(side='left', fill='both', expand=True)
+    
+        # Chart 4: Pattern Types by SWBS (Stacked Bar Chart)
+        fig4 = plt.Figure(figsize=(5, 4), dpi=100)
+        ax4 = fig4.add_subplot(111)
+    
+        # Prepare data
+        swbs_list = list(swbs_data.keys())
+        add_counts = [swbs_data[swbs]["add_requests"] for swbs in swbs_list]
+        del_counts = [swbs_data[swbs]["del_requests"] for swbs in swbs_list]
+        update_counts = [swbs_data[swbs]["detail_updates"] for swbs in swbs_list]
+    
+        # Create stacked bars
+        bar_width = 0.35
+        ax4.bar(swbs_list, add_counts, bar_width, label='ADD', color='#ff9999')
+        ax4.bar(swbs_list, del_counts, bar_width, bottom=add_counts, label='DEL', color='#66b3ff')
+    
+        # Calculate position for updates bar
+        bottom_vals = [a + d for a, d in zip(add_counts, del_counts)]
+        ax4.bar(swbs_list, update_counts, bar_width, bottom=bottom_vals, label='Updates', color='#99ff99')
+    
+        # Add labels and title
+        ax4.set_xlabel('SWBS Group')
+        ax4.set_ylabel('Number of Patterns')
+        ax4.set_title('Pattern Types by SWBS')
+        ax4.legend()
+    
+        # Adjust layout
+        fig4.tight_layout()
+    
+        # Embed in canvas
+        canvas4 = FigureCanvasTkAgg(fig4, master=analytics_bottom)
+        canvas4.draw()
+        canvas4.get_tk_widget().pack(side='left', fill='both', expand=True)
+    
+        # Add export button
+        export_frame = tk.Frame(self.analytics_charts_frame)
+        export_frame.pack(fill='x', padx=10, pady=10)
+    
+        export_button = tk.Button(
+            export_frame, 
+            text="Export Analytics to PDF", 
+            command=lambda: self.export_analytics_to_pdf([fig1, fig2, fig3, fig4])
+        )
+        export_button.pack(side='right', padx=5)
+    
+        # Add analytics summary text
+        summary_frame = tk.Frame(self.analytics_charts_frame)
+        summary_frame.pack(fill='x', padx=10, pady=5)
+    
+        # Calculate overall completion
+        if total_patterns > 0:
+            overall_completion = (total_sat / total_patterns) * 100
+        else:
+            overall_completion = 0
+    
+        summary_text = f"""
+        Analytics Summary:
+    
+        • Total Subset Files: {len(self.subset_stats)}
+        • Total Patterns: {total_patterns}
+        • Pattern Types: {total_add} ADD, {total_del} DEL, {total_updates} Updates
+        • Status Distribution: {total_sat} SAT, {total_unsat} UNSAT
+        • Overall Completion: {overall_completion:.1f}%
+        • SWBS Groups: {len(swbs_data)}
+        """
+    
+        summary_label = tk.Label(summary_frame, text=summary_text, justify='left', font=("Helvetica", 10))
+        summary_label.pack(side='left', padx=10, pady=5, anchor='nw')
+
+    def export_analytics_to_pdf(self, figures):
+        """Export the analytics charts to a PDF file"""
+        # Ask user for save location
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".pdf",
+            filetypes=[("PDF files", "*.pdf")],
+            initialfile="RTVM_Subset_Analytics.pdf"
+        )
+    
+        if not save_path:
+            return
+    
+        try:
+            # Create PDF with matplotlib
+            from matplotlib.backends.backend_pdf import PdfPages
+        
+            with PdfPages(save_path) as pdf:
+                # Add each figure to the PDF
+                for fig in figures:
+                    pdf.savefig(fig)
+            
+                # Set PDF metadata
+                d = pdf.infodict()
+                d['Title'] = 'RTVM Subset Analytics'
+                d['Author'] = os.getenv('USERNAME', 'RTVM Tool User')
+                d['Subject'] = 'RTVM Subset Management Analytics'
+                d['Keywords'] = 'RTVM, analytics, subset, statistics'
+                d['CreationDate'] = datetime.now()
+        
+            messagebox.showinfo("Export Complete", f"Analytics exported to {save_path}")
+    
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export analytics: {str(e)}")
+
+    # Integration method for the main RTVMApp class
+    def open_rvtm_subset_management_window(self):
+        """
+        Open the enhanced RTVM Subset Management window
+        """
+        # Call the new enhanced version
+        self.enhance_rvtm_subset_management_window()
+      # Assuming full path is stored
+    
+        try:
+            # Try to open the file with the default application
+            import os
+            os.startfile(file_path)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not open file: {e}")
+
+    def show_subset_folder(self):
+        """Open the folder containing the selected subset"""
+        selected_items = self.subset_status_table.selection()
+        if not selected_items:
+            return
+    
+        item = selected_items[0]
+        filename = self.subset_status_table.item(item, "values")[0]  # Get the filename from the UI
+    
+        # We now need to find the full path from subset_stats since we're only displaying filenames
+        file_path = None
+        for stat in self.subset_stats:
+            if stat["filename"] == filename:
+                file_path = stat["file_path"]
+                break
+    
+        if not file_path:
+            messagebox.showerror("Error", f"Could not find full path for: {filename}")
+            return
+    
+        folder_path = os.path.dirname(file_path)
+    
+        try:
+            # Open the folder in File Explorer
+            import os
+            os.startfile(folder_path)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not open folder: {e}")
+
+    def sort_subset_table(self, column):
+        """Sort the subset status table by the clicked column"""
+        # Get current sort direction
+        sort_order = getattr(self, 'subset_sort_order', True)  # Default ascending
+        self.subset_sort_order = not sort_order  # Toggle for next click
+    
+        # Get all items along with the specified column value
+        data = [(self.subset_status_table.set(item, column), item) for item in self.subset_status_table.get_children('')]
+    
+        # Determine sort key based on column type
+        numeric_columns = [
+            "Total Patterns", "ADD Requests", "DEL Requests", "Detail Updates", 
+            "SAT Status", "UNSAT Status", "Completion %"
+        ]
+    
+        # Sort the data
+        if column in numeric_columns:
+            data.sort(key=lambda x: float(x[0]) if x[0] and x[0] != 'N/A' else -1, reverse=sort_order)
+        else:
+            data.sort(key=lambda x: x[0], reverse=sort_order)
+    
+        # Rearrange items according to sort
+        for index, (_, item) in enumerate(data):
+            self.subset_status_table.move(item, '', index)
+    
+        # Update column heading to show sort indicator
+        for col in self.subset_status_table["columns"]:
+            if col == column:
+                direction = "▼" if sort_order else "▲"
+                self.subset_status_table.heading(col, text=f"{col} {direction}")
+            else:
+                self.subset_status_table.heading(col, text=col)
+
+    def detect_pmrs(self):
+        """Auto-detect available PMR numbers in the base folder"""
+        if not self.selected_base_path:
+            messagebox.showerror("Error", "Please select a base location first")
+            return
+    
+        pmr_folders = []
+    
+        # Look for folders with pattern "PMR X"
+        for item in os.listdir(self.selected_base_path):
+            item_path = os.path.join(self.selected_base_path, item)
+            if os.path.isdir(item_path) and item.startswith("PMR "):
+                try:
+                    pmr_num = item.split("PMR ")[1].strip()
+                    pmr_folders.append(pmr_num)
+                except:
+                    continue
+    
+        if not pmr_folders:
+            messagebox.showinfo("No PMRs Found", "No PMR folders detected in the base location")
+            return
+    
+        # If PMRs are found, show dialog for user to select one
+        pmr_window = tk.Toplevel(self.root)
+        pmr_window.title("Select PMR")
+        pmr_window.geometry("300x300")
+        pmr_window.transient(self.root)
+        pmr_window.grab_set()
+    
+        tk.Label(pmr_window, text="Select a PMR Number:").pack(pady=10)
+    
+        # Create listbox for PMRs
+        pmr_listbox = tk.Listbox(pmr_window, height=10, width=20)
+        pmr_listbox.pack(pady=5, fill='both', expand=True, padx=10)
+    
+        # Add PMRs to listbox
+        for pmr in sorted(pmr_folders, key=lambda x: int(x) if x.isdigit() else 0):
+            pmr_listbox.insert(tk.END, pmr)
+    
+        # Function to handle selection
+        def select_pmr():
+            selection = pmr_listbox.curselection()
+            if selection:
+                selected_pmr = pmr_listbox.get(selection[0])
+                self.status_pmr_var.set(selected_pmr)
+                # Trigger a scan with the selected PMR
+                pmr_window.destroy()
+                self.scan_subset_files()
+    
+        # Add select button
+        select_button = tk.Button(pmr_window, text="Select", command=select_pmr)
+        select_button.pack(pady=10)
+
+    def init_analytics_placeholder(self):
+        """Initialize empty analytics area with instructions"""
+        # Clear any existing widgets
+        for widget in self.analytics_charts_frame.winfo_children():
+            widget.destroy()
+    
+        # Add placeholder message
+        placeholder = tk.Label(self.analytics_charts_frame, 
+                               text="Click 'Generate Analytics' to view charts and statistics about your RTVM subsets",
+                               font=("Helvetica", 12))
+        placeholder.pack(expand=True, fill='both')
+
+    def scan_subset_files(self):
+        """
+        Scan the selected base location for subset files and populate the status table
+        """
+        if not self.selected_base_path:
+            messagebox.showerror("Error", "Please select a base location first")
+            return
+    
+        # Get PMR number
+        pmr_number = self.status_pmr_var.get().strip()
+        if not pmr_number:
+            messagebox.showerror("Error", "Please enter a PMR number")
+            return
+    
+        pmr_folder = os.path.join(self.selected_base_path, f"PMR {pmr_number}")
+        if not os.path.exists(pmr_folder):
+            messagebox.showerror("Error", f"PMR folder not found: {pmr_folder}")
+            return
+    
+        # Show progress dialog
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Scanning Subset Files")
+        progress_window.geometry("400x150")
+        progress_window.transient(self.root)
+        progress_window.grab_set()
+    
+        tk.Label(progress_window, text="Scanning subset files...").pack(pady=(20, 10))
+    
+        progress_var = tk.DoubleVar()
+        progress_bar = ttk.Progressbar(progress_window, variable=progress_var, maximum=100, length=350)
+        progress_bar.pack(pady=(10, 10), padx=20)
+    
+        status_var = tk.StringVar(value="Starting scan...")
+        status_label = tk.Label(progress_window, textvariable=status_var)
+        status_label.pack(pady=10)
+    
+        # Clear existing items in the table
+        for item in self.subset_status_table.get_children():
+            self.subset_status_table.delete(item)
+    
+        # Use queue for thread-safe communication
+        result_queue = queue.Queue()
+    
+        # Define the scanning function to run in a separate thread
+        def scan_worker():
+            try:
+                subset_files = []
+                # Find all subset files
+                for root, dirs, files in os.walk(pmr_folder):
+                    for file in files:
+                        if file.lower().endswith(('.xlsx', '.xls')) and "RTVM Subset" in file:
+                            subset_files.append(os.path.join(root, file))
+            
+                if not subset_files:
+                    result_queue.put(("error", "No subset files found"))
+                    return
+            
+                # Update progress
+                result_queue.put(("status", f"Found {len(subset_files)} subset files. Processing..."))
+                result_queue.put(("max", len(subset_files)))
+            
+                # Process each file
+                subset_stats = []
+                for idx, file_path in enumerate(subset_files):
+                    # Update progress
+                    result_queue.put(("progress", idx + 1))
+                    result_queue.put(("status", f"Processing file {idx + 1}/{len(subset_files)}: {os.path.basename(file_path)}"))
+                
+                    try:
+                        # Extract SWBS from path (clean format for display)
+                        swbs = "Unknown"
+                        path_parts = file_path.split(os.sep)
+                        for part in path_parts:
+                            # Look for SWBS folder - should contain "SWBS" in name
+                            if "SWBS" in part:
+                                swbs = part
+                                break
+                    
+                        # Get file modification time
+                        mod_time = os.path.getmtime(file_path)
+                        mod_time_str = datetime.fromtimestamp(mod_time).strftime("%Y-%m-%d %H:%M")
+                    
+                        # Open the file and analyze
+                        if os.path.getsize(file_path) > 0:  # Skip empty files
+                            try:
+                                wb = load_workbook(filename=file_path, read_only=True, data_only=True)
+                            
+                                if 'RTVM' in wb.sheetnames:
+                                    ws = wb['RTVM']
+                                else:
+                                    ws = wb.active
+                            
+                                # Initialize counters with default values of 0
+                                total_patterns = 0
+                                add_requests = 0
+                                del_requests = 0
+                                detail_updates = 0
+                                sat_status = 0
+                                unsat_status = 0
+                            
+                                # Safely process each row
+                                try:
+                                    # Process cells in column G (index 6) - Contractor Proposed Change Request Input
+                                    for row in ws.iter_rows(min_row=2):
+                                        # Skip rows that don't have enough cells
+                                        if len(row) <= 6:
+                                            continue
+                                        
+                                        # Get the cell from column G (index 6)
+                                        cell = row[6]
+                                    
+                                        # Skip empty cells
+                                        if cell is None or cell.value is None:
+                                            continue
+                                    
+                                        # Convert cell value to string and handle different types
+                                        try:
+                                            cell_content = str(cell.value)
+                                        except Exception:
+                                            # If conversion fails, skip this cell
+                                            continue
+                                    
+                                        # Skip empty strings
+                                        if not cell_content.strip():
+                                            continue
+                                    
+                                        # Split into lines and filter out empty ones
+                                        lines = [line.strip() for line in cell_content.split('\n') if line.strip()]
+                                    
+                                        # Count total patterns
+                                        total_patterns += len(lines)
+                                    
+                                        # Process each pattern line
+                                        for line in lines:
+                                            try:
+                                                # Count by pattern type
+                                                if line.startswith('ADD;'):
+                                                    add_requests += 1
+                                                elif line.startswith('DEL;'):
+                                                    del_requests += 1
+                                                # Count non-ADD, non-DEL patterns that contain semicolons as detail updates
+                                                elif ';' in line and not line.startswith('ADD;') and not line.startswith('DEL;'):
+                                                    detail_updates += 1
+                                            
+                                                # Count by status (case-insensitive)
+                                                line_upper = line.upper()
+                                                if ';SAT' in line_upper:
+                                                    sat_status += 1
+                                                elif ';UNSAT' in line_upper:
+                                                    unsat_status += 1
+                                            except Exception:
+                                                # If any error occurs processing a line, continue to the next
+                                                continue
+                                except Exception as row_error:
+                                    # If there's an error processing rows, log it but continue with counts we have
+                                    print(f"Error processing rows in {file_path}: {row_error}")
+                                    # We'll still use the counts we managed to get
+                            
+                                # Calculate completion percentage (handle division by zero)
+                                if total_patterns > 0:
+                                    completion_pct = (sat_status / total_patterns) * 100
+                                else:
+                                    completion_pct = 0
+                            
+                                # Create subset info dictionary with the counts we have
+                                subset_info = {
+                                    "file_path": file_path,
+                                    "filename": os.path.basename(file_path),  # Store just the filename separately
+                                    "swbs": swbs,
+                                    "modified": mod_time_str,
+                                    "total_patterns": total_patterns,
+                                    "add_requests": add_requests,
+                                    "del_requests": del_requests,
+                                    "detail_updates": detail_updates,
+                                    "sat_status": sat_status,
+                                    "unsat_status": unsat_status,
+                                    "completion_pct": f"{completion_pct:.1f}"
+                                }
+                            
+                                subset_stats.append(subset_info)
+                            
+                            except Exception as wb_error:
+                                # If there's an error with the workbook, create an entry with zeros
+                                print(f"Error opening workbook {file_path}: {wb_error}")
+                                subset_info = {
+                                    "file_path": file_path,
+                                    "filename": os.path.basename(file_path),  # Store just the filename separately
+                                    "swbs": swbs,
+                                    "modified": mod_time_str,
+                                    "total_patterns": 0,
+                                    "add_requests": 0,
+                                    "del_requests": 0,
+                                    "detail_updates": 0,
+                                    "sat_status": 0,
+                                    "unsat_status": 0,
+                                    "completion_pct": "0.0"
+                                }
+                                subset_stats.append(subset_info)
+                        else:
+                            # Empty file
+                            subset_info = {
+                                "file_path": file_path,
+                                "filename": os.path.basename(file_path),  # Store just the filename separately
+                                "swbs": swbs,
+                                "modified": mod_time_str,
+                                "total_patterns": 0,
+                                "add_requests": 0,
+                                "del_requests": 0,
+                                "detail_updates": 0,
+                                "sat_status": 0,
+                                "unsat_status": 0,
+                                "completion_pct": "0.0"
+                            }
+                            subset_stats.append(subset_info)
+                
+                    except Exception as e:
+                        print(f"Error processing file {file_path}: {e}")
+                        # Add entry with zeros for error case
+                        subset_info = {
+                            "file_path": file_path,
+                            "filename": os.path.basename(file_path),  # Store just the filename separately
+                            "swbs": swbs if 'swbs' in locals() else "Unknown",
+                            "modified": mod_time_str if 'mod_time_str' in locals() else "Unknown",
+                            "total_patterns": 0,
+                            "add_requests": 0,
+                            "del_requests": 0,
+                            "detail_updates": 0,
+                            "sat_status": 0,
+                            "unsat_status": 0,
+                            "completion_pct": "0.0"
+                        }
+                        subset_stats.append(subset_info)
+            
+                # Store subset statistics for later use
+                self.subset_stats = subset_stats
+            
+                # Signal completion
+                result_queue.put(("complete", subset_stats))
+        
+            except Exception as e:
+                result_queue.put(("error", str(e)))
+    
+        # Start scanning thread
+        scan_thread = threading.Thread(target=scan_worker)
+        scan_thread.daemon = True
+        scan_thread.start()
+    
+        # Function to update progress and handle completion
+        def check_progress():
+            try:
+                # Check for messages from the worker thread
+                while True:
+                    message_type, data = result_queue.get_nowait()
+                
+                    if message_type == "status":
+                        status_var.set(data)
+                
+                    elif message_type == "progress":
+                        progress_var.set((data / progress_bar["maximum"]) * 100)
+                
+                    elif message_type == "max":
+                        progress_bar["maximum"] = data
+                
+                    elif message_type == "error":
+                        messagebox.showerror("Error", data)
+                        progress_window.destroy()
+                        return
+                
+                    elif message_type == "complete":
+                        # Process is complete, update table with results
+                        subset_stats = data
+                    
+                        # Update table in the main thread
+                        for subset in subset_stats:
+                            values = (
+                                subset["filename"],  # Show just the filename instead of full path
+                                subset["swbs"],      # Keep the SWBS display cleaner
+                                subset["modified"],
+                                subset["total_patterns"],
+                                subset["add_requests"],
+                                subset["del_requests"],
+                                subset["detail_updates"],
+                                subset["sat_status"],
+                                subset["unsat_status"],
+                                subset["completion_pct"]
+                            )
+                        
+                            # Insert with color coding based on completion percentage
+                            try:
+                                completion = float(subset["completion_pct"])
+                                if completion >= 90:
+                                    tag = "complete"
+                                elif completion >= 50:
+                                    tag = "progress"
+                                elif completion > 0:
+                                    tag = "started"
+                                else:
+                                    tag = "not_started"
+                            except:
+                                tag = "error"
+                        
+                            self.subset_status_table.insert("", "end", values=values, tags=(tag,))
+                    
+                        # Configure tags for color coding
+                        self.subset_status_table.tag_configure("complete", background="#a5d6a7")  # Light green
+                        self.subset_status_table.tag_configure("progress", background="#fff59d")  # Light yellow
+                        self.subset_status_table.tag_configure("started", background="#ffcc80")   # Light orange
+                        self.subset_status_table.tag_configure("not_started", background="#ef9a9a")  # Light red
+                        self.subset_status_table.tag_configure("error", background="#e0e0e0")  # Grey
+                    
+                        # Close progress window after a short delay
+                        progress_window.after(500, progress_window.destroy)
+                        return
+        
+            except queue.Empty:
+                # Queue is empty, check again later
+                progress_window.after(100, check_progress)
+    
+        # Start checking for progress updates
+        progress_window.after(100, check_progress)
+
+
+    def view_subset_patterns(self):
+        """View detailed pattern breakdown for selected subset"""
+        selected_items = self.subset_status_table.selection()
+        if not selected_items:
+            return
+    
+        item = selected_items[0]
+        file_path = self.subset_status_table.item(item, "values")[0]
+    
+        try:
+            # Open workbook
+            wb = load_workbook(filename=file_path, read_only=True)
+        
+            if 'RTVM' in wb.sheetnames:
+                ws = wb['RTVM']
+            else:
+                ws = wb.active
+        
+            # Collect patterns
+            patterns = []
+            for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+                if len(row) > 6 and row[6]:
+                    cell_content = str(row[6])
+                    lines = [line.strip() for line in cell_content.split('\n') if line.strip()]
+                
+                    for line in lines:
+                        pattern_type = "Unknown"
+                        if line.startswith('ADD;'):
+                            pattern_type = "ADD Request"
+                        elif line.startswith('DEL;'):
+                            pattern_type = "DEL Request"
+                        elif ';' in line and not line.startswith('ADD;') and not line.startswith('DEL;'):
+                            pattern_type = "Detail Update"
+                    
+                        status = "Unknown"
+                        if ';SAT' in line:
+                            status = "SAT"
+                        elif ';UNSAT' in line:
+                            status = "UNSAT"
+                    
+                        patterns.append({
+                            "row": row_idx,
+                            "type": pattern_type,
+                            "status": status,
+                            "pattern": line
+                        })
+        
+            # Create detail window
+            detail_window = tk.Toplevel(self.root)
+            detail_window.title(f"Pattern Details: {os.path.basename(file_path)}")
+            detail_window.geometry("900x600")
+            detail_window.transient(self.root)
+        
+            # Create table frame
+            table_frame = tk.Frame(detail_window)
+            table_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+            # Create table
+            columns = ("Row", "Pattern Type", "Status", "Pattern")
+            pattern_table = ttk.Treeview(table_frame, columns=columns, show="headings")
+        
+            # Configure columns
+            pattern_table.heading("Row", text="Excel Row")
+            pattern_table.heading("Pattern Type", text="Pattern Type")
+            pattern_table.heading("Status", text="Status")
+            pattern_table.heading("Pattern", text="Pattern")
+        
+            # Configure column widths
+            pattern_table.column("Row", width=80, anchor="center")
+            pattern_table.column("Pattern Type", width=120)
+            pattern_table.column("Status", width=80)
+            pattern_table.column("Pattern", width=600)
+        
+            # Add scrollbars
+            y_scroll = ttk.Scrollbar(table_frame, orient="vertical", command=pattern_table.yview)
+            x_scroll = ttk.Scrollbar(table_frame, orient="horizontal", command=pattern_table.xview)
+            pattern_table.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+        
+            # Pack table and scrollbars
+            y_scroll.pack(side="right", fill="y")
+            x_scroll.pack(side="bottom", fill="x")
+            pattern_table.pack(side="left", fill="both", expand=True)
+        
+            # Add control buttons
+            button_frame = tk.Frame(detail_window)
+            button_frame.pack(fill="x", padx=10, pady=10)
+        
+            # Add filter options
+            filter_frame = tk.Frame(button_frame)
+            filter_frame.pack(side="left")
+        
+            tk.Label(filter_frame, text="Filter:").pack(side="left", padx=5)
+        
+            # Filter by type
+            type_var = tk.StringVar(value="All")
+            type_dropdown = ttk.Combobox(filter_frame, textvariable=type_var, 
+                                          values=["All", "ADD Request", "DEL Request", "Detail Update"],
+                                          width=15, state="readonly")
+            type_dropdown.pack(side="left", padx=5)
+        
+            # Filter by status
+            status_var = tk.StringVar(value="All")
+            status_dropdown = ttk.Combobox(filter_frame, textvariable=status_var,
+                                            values=["All", "SAT", "UNSAT"],
+                                            width=10, state="readonly")
+            status_dropdown.pack(side="left", padx=5)
+        
+            # Apply filter button
+            def apply_filter():
+                # Clear table
+                for item in pattern_table.get_children():
+                    pattern_table.delete(item)
+            
+                # Get filter values
+                pattern_type = type_var.get()
+                status = status_var.get()
+            
+                # Apply filters
+                filtered_patterns = patterns
+                if pattern_type != "All":
+                    filtered_patterns = [p for p in filtered_patterns if p["type"] == pattern_type]
+                if status != "All":
+                    filtered_patterns = [p for p in filtered_patterns if p["status"] == status]
+            
+                # Populate table with filtered data
+                for pattern in filtered_patterns:
+                    values = (pattern["row"], pattern["type"], pattern["status"], pattern["pattern"])
+                    pattern_table.insert("", "end", values=values, tags=(pattern["status"].lower(),))
+            
+                # Update count
+                count_label.config(text=f"Showing {len(filtered_patterns)} of {len(patterns)} patterns")
+        
+            filter_button = tk.Button(filter_frame, text="Apply Filter", command=apply_filter)
+            filter_button.pack(side="left", padx=5)
+        
+            # Export button
+            export_button = tk.Button(button_frame, text="Export to Excel", 
+                                      command=lambda: self.export_patterns_to_excel(patterns, file_path))
+            export_button.pack(side="right", padx=5)
+        
+            # Count label
+            count_label = tk.Label(button_frame, text=f"Total patterns: {len(patterns)}")
+            count_label.pack(side="right", padx=10)
+        
+            # Populate table
+            for pattern in patterns:
+                values = (pattern["row"], pattern["type"], pattern["status"], pattern["pattern"])
+                pattern_table.insert("", "end", values=values, tags=(pattern["status"].lower(),))
+        
+            # Configure tags for color coding
+            pattern_table.tag_configure("sat", background="#a5d6a7")  # Light green
+            pattern_table.tag_configure("unsat", background="#ffcc80")  # Light orange
+            pattern_table.tag_configure("unknown", background="#e0e0e0")  # Grey
+    
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not read pattern data: {str(e)}")
+
+    def export_patterns_to_excel(self, patterns, file_path):
+        """Export the pattern details to an Excel file"""
+        if not patterns:
+            messagebox.showinfo("No Data", "No patterns to export")
+            return
+    
+        # Ask user for save location
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")],
+            initialfile=f"Patterns_{os.path.basename(file_path)}"
+        )
+    
+        if not save_path:
+            return
+    
+        try:
+            # Create a new workbook
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Pattern Analysis"
+        
+            # Add headers
+            headers = ["Excel Row", "Pattern Type", "Status", "Pattern"]
+            for col, header in enumerate(headers, start=1):
+                ws.cell(row=1, column=col, value=header).font = Font(bold=True)
+        
+            # Add data
+            for row, pattern in enumerate(patterns, start=2):
+                ws.cell(row=row, column=1, value=pattern["row"])
+                ws.cell(row=row, column=2, value=pattern["type"])
+                ws.cell(row=row, column=3, value=pattern["status"])
+                ws.cell(row=row, column=4, value=pattern["pattern"])
+            
+                # Apply conditional formatting
+                if pattern["status"] == "SAT":
+                    ws.cell(row=row, column=3).fill = PatternFill(start_color="a5d6a7", end_color="a5d6a7", fill_type="solid")
+                elif pattern["status"] == "UNSAT":
+                    ws.cell(row=row, column=3).fill = PatternFill(start_color="ffcc80", end_color="ffcc80", fill_type="solid")
+        
+            # Auto-adjust column widths
+            for col in ws.columns:
+                max_length = 0
+                column = col[0].column_letter
+                for cell in col:
+                    if cell.value:
+                        cell_length = len(str(cell.value))
+                        if cell_length > max_length:
+                            max_length = cell_length
+            
+                adjusted_width = (max_length + 2) * 1.2
+                ws.column_dimensions[column].width = min(adjusted_width, 100)
+        
+            # Add summary on a second sheet
+            ws_summary = wb.create_sheet(title="Summary")
+        
+            # Add summary headers
+            summary_headers = ["Metric", "Count", "Percentage"]
+            for col, header in enumerate(summary_headers, start=1):
+                ws_summary.cell(row=1, column=col, value=header).font = Font(bold=True)
+        
+            # Total patterns
+            total = len(patterns)
+            ws_summary.cell(row=2, column=1, value="Total Patterns")
+            ws_summary.cell(row=2, column=2, value=total)
+        
+            # Pattern types
+            type_counts = {"ADD Request": 0, "DEL Request": 0, "Detail Update": 0, "Unknown": 0}
+            for pattern in patterns:
+                type_counts[pattern["type"]] += 1
+        
+            row = 3
+            for pattern_type, count in type_counts.items():
+                if count > 0:
+                    ws_summary.cell(row=row, column=1, value=f"{pattern_type} Count")
+                    ws_summary.cell(row=row, column=2, value=count)
+                    ws_summary.cell(row=row, column=3, value=f"{(count/total)*100:.1f}%")
+                    row += 1
+        
+            # Status counts
+            status_counts = {"SAT": 0, "UNSAT": 0, "Unknown": 0}
+            for pattern in patterns:
+                status_counts[pattern["status"]] += 1
+        
+            row += 1
+            ws_summary.cell(row=row, column=1, value="Status Breakdown").font = Font(bold=True)
+            row += 1
+        
+            for status, count in status_counts.items():
+                if count > 0:
+                    ws_summary.cell(row=row, column=1, value=f"{status} Count")
+                    ws_summary.cell(row=row, column=2, value=count)
+                    ws_summary.cell(row=row, column=3, value=f"{(count/total)*100:.1f}%")
+                    row += 1
+        
+            # Auto-adjust column widths for summary
+            for col in ws_summary.columns:
+                max_length = 0
+                column = col[0].column_letter
+                for cell in col:
+                    if cell.value:
+                        cell_length = len(str(cell.value))
+                        if cell_length > max_length:
+                            max_length = cell_length
+            
+                adjusted_width = (max_length + 2) * 1.2
+                ws_summary.column_dimensions[column].width = adjusted_width
+        
+            # Save the workbook
+            wb.save(save_path)
+            messagebox.showinfo("Export Complete", f"Pattern details exported to {save_path}")
+    
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export patterns: {str(e)}")
+
+    def check_subset_issues(self):
+        """Check the selected subset for potential issues"""
+        selected_items = self.subset_status_table.selection()
+        if not selected_items:
+            return
+    
+        item = selected_items[0]
+        file_path = self.subset_status_table.item(item, "values")[0]
+    
+        try:
+            # Open workbook
+            wb = load_workbook(filename=file_path, read_only=True)
+        
+            if 'RTVM' in wb.sheetnames:
+                ws = wb['RTVM']
+            else:
+                ws = wb.active
+        
+            # Define potential issues
+            issues = []
+        
+            # Rows with patterns but no comments
+            # Rows with TBD status
+            # Rows with missing data in patterns
+            # Patterns with invalid format
+        
+            for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+                if len(row) <= 7:
+                    continue
+                
+                # Get patterns from column G
+                cell_content = str(row[6]) if row[6] is not None else ""
+                pattern_lines = [line.strip() for line in cell_content.split('\n') if line.strip()]
+            
+                # Get comments from column H
+                comment_content = str(row[7]) if row[7] is not None else ""
+            
+                # Check for patterns without comments
+                if pattern_lines and not comment_content.strip():
+                    issues.append({
+                        "row": row_idx,
+                        "type": "Missing Comment",
+                        "description": f"Row has {len(pattern_lines)} patterns but no comments"
+                    })
+            
+                # Check each pattern for issues
+                for line in pattern_lines:
+                    # Check for TBD status
+                    if ';TBD' in line:
+                        issues.append({
+                            "row": row_idx,
+                            "type": "TBD Status",
+                            "description": f"Pattern contains TBD status: {line}"
+                        })
+                
+                    # Check for patterns with spaces around semicolons
+                    if re.search(r"\s+;|;\s+", line):
+                        issues.append({
+                            "row": row_idx,
+                            "type": "Format Error",
+                            "description": f"Pattern has spaces around semicolons: {line}"
+                        })
+                
+                    # Validate ADD patterns
+                    if line.startswith('ADD;'):
+                        parts = line.split(';')
+                        if len(parts) < 2:
+                            issues.append({
+                                "row": row_idx,
+                                "type": "Incomplete Pattern",
+                                "description": f"ADD pattern missing DI Number: {line}"
+                            })
+                        elif len(parts) >= 4 and parts[3].strip() not in ["SAT", "UNSAT"]:
+                            issues.append({
+                                "row": row_idx,
+                                "type": "Invalid Status",
+                                "description": f"ADD pattern has invalid status: {line}"
+                            })
+                
+                    # Validate DEL patterns
+                    elif line.startswith('DEL;'):
+                        parts = line.split(';')
+                        if len(parts) != 2 or not parts[1].strip():
+                            issues.append({
+                                "row": row_idx,
+                                "type": "Invalid DEL Pattern",
+                                "description": f"DEL pattern should have format DEL;WCC-VERI-DOC-XXXX: {line}"
+                            })
+                
+                    # Validate update patterns
+                    elif ';' in line and not line.startswith('ADD;') and not line.startswith('DEL;'):
+                        parts = line.split(';')
+                        if not parts[0].startswith('WCC-VERI-DOC-'):
+                            issues.append({
+                                "row": row_idx,
+                                "type": "Invalid VeriDoc",
+                                "description": f"VeriDoc number should start with WCC-VERI-DOC-: {line}"
+                            })
+                    
+                        if len(parts) >= 3 and parts[2].strip() not in ["SAT", "UNSAT"]:
+                            issues.append({
+                                "row": row_idx,
+                                "type": "Invalid Status",
+                                "description": f"Update pattern has invalid status: {line}"
+                            })
+        
+            # Show issues in a new window
+            issues_window = tk.Toplevel(self.root)
+            issues_window.title(f"Issues in {os.path.basename(file_path)}")
+            issues_window.geometry("900x600")
+            issues_window.transient(self.root)
+        
+            # Create table frame
+            table_frame = tk.Frame(issues_window)
+            table_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+            # Create table
+            columns = ("Row", "Issue Type", "Description")
+            issues_table = ttk.Treeview(table_frame, columns=columns, show="headings")
+        
+            # Configure columns
+            issues_table.heading("Row", text="Excel Row")
+            issues_table.heading("Issue Type", text="Issue Type")
+            issues_table.heading("Description", text="Description")
+        
+            issues_table.column("Row", width=80, anchor="center")
+            issues_table.column("Issue Type", width=150)
+            issues_table.column("Description", width=650)
+        
+            # Add scrollbars
+            y_scroll = ttk.Scrollbar(table_frame, orient="vertical", command=issues_table.yview)
+            issues_table.configure(yscrollcommand=y_scroll.set)
+        
+            # Pack table and scrollbar
+            y_scroll.pack(side="right", fill="y")
+            issues_table.pack(side="left", fill="both", expand=True)
+        
+            # Add issues to table
+            if issues:
+                for issue in issues:
+                    values = (issue["row"], issue["type"], issue["description"])
+                    tag = issue["type"].lower().replace(" ", "_")
+                    issues_table.insert("", "end", values=values, tags=(tag,))
+            
+                # Configure tags for color coding
+                issues_table.tag_configure("tbd_status", background="#fff59d")  # Light yellow
+                issues_table.tag_configure("missing_comment", background="#ffcc80")  # Light orange
+                issues_table.tag_configure("format_error", background="#ef9a9a")  # Light red
+                issues_table.tag_configure("incomplete_pattern", background="#ef9a9a")  # Light red
+                issues_table.tag_configure("invalid_status", background="#ef9a9a")  # Light red
+                issues_table.tag_configure("invalid_del_pattern", background="#ef9a9a")  # Light red
+                issues_table.tag_configure("invalid_veridoc", background="#ef9a9a")  # Light red
+            else:
+                # No issues found
+                no_issues_label = tk.Label(issues_window, text="No issues found in this subset", font=("Helvetica", 14))
+                no_issues_label.pack(expand=True)
+            
+            # Add export button
+            button_frame = tk.Frame(issues_window)
+            button_frame.pack(fill="x", padx=10, pady=10)
+        
+            # Summary label
+            summary_label = tk.Label(button_frame, text=f"Found {len(issues)} issues")
+            summary_label.pack(side="left", padx=10)
+        
+            # Export button
+            if issues:
+                export_button = tk.Button(button_frame, text="Export Issues", 
+                                        command=lambda: self.export_issues_to_excel(issues, file_path))
+                export_button.pack(side="right", padx=5)
+    
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not check subset for issues: {str(e)}")
+
+    def export_issues_to_excel(self, issues, file_path):
+        """Export the issues list to an Excel file"""
+        if not issues:
+            messagebox.showinfo("No Data", "No issues to export")
+            return
+    
+        # Ask user for save location
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")],
+            initialfile=f"Issues_{os.path.basename(file_path)}"
+        )
+    
+        if not save_path:
+            return
+    
+        try:
+            # Create a new workbook
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Identified Issues"
+        
+            # Add headers
+            headers = ["Excel Row", "Issue Type", "Description"]
+            for col, header in enumerate(headers, start=1):
+                ws.cell(row=1, column=col, value=header).font = Font(bold=True)
+        
+            # Add data
+            for row, issue in enumerate(issues, start=2):
+                ws.cell(row=row, column=1, value=issue["row"])
+                ws.cell(row=row, column=2, value=issue["type"])
+                ws.cell(row=row, column=3, value=issue["description"])
+            
+                # Apply conditional formatting
+                if issue["type"] == "TBD Status":
+                    ws.cell(row=row, column=2).fill = PatternFill(start_color="fff59d", end_color="fff59d", fill_type="solid")
+                elif issue["type"] == "Missing Comment":
+                    ws.cell(row=row, column=2).fill = PatternFill(start_color="ffcc80", end_color="ffcc80", fill_type="solid")
+                else:
+                    ws.cell(row=row, column=2).fill = PatternFill(start_color="ef9a9a", end_color="ef9a9a", fill_type="solid")
+        
+            # Auto-adjust column widths
+            for col in ws.columns:
+                max_length = 0
+                column = col[0].column_letter
+                for cell in col:
+                    if cell.value:
+                        cell_length = len(str(cell.value))
+                        if cell_length > max_length:
+                            max_length = cell_length
+            
+                adjusted_width = (max_length + 2) * 1.2
+                ws.column_dimensions[column].width = min(adjusted_width, 100)
+            
+            # Add a summary on a second sheet
+            ws_summary = wb.create_sheet(title="Summary")
+        
+            # Add headers
+            summary_headers = ["Issue Type", "Count", "Percentage"]
+            for col, header in enumerate(summary_headers, start=1):
+                ws_summary.cell(row=1, column=col, value=header).font = Font(bold=True)
+        
+            # Count issues by type
+            issue_types = {}
+            for issue in issues:
+                issue_type = issue["type"]
+                if issue_type not in issue_types:
+                    issue_types[issue_type] = 0
+                issue_types[issue_type] += 1
+        
+            # Add data
+            total_issues = len(issues)
+            for row, (issue_type, count) in enumerate(issue_types.items(), start=2):
+                ws_summary.cell(row=row, column=1, value=issue_type)
+                ws_summary.cell(row=row, column=2, value=count)
+                percentage = (count / total_issues) * 100
+                ws_summary.cell(row=row, column=3, value=f"{percentage:.1f}%")
+            
+                # Conditional formatting
+                if issue_type == "TBD Status":
+                    ws_summary.cell(row=row, column=1).fill = PatternFill(start_color="fff59d", end_color="fff59d", fill_type="solid")
+                elif issue_type == "Missing Comment":
+                    ws_summary.cell(row=row, column=1).fill = PatternFill(start_color="ffcc80", end_color="ffcc80", fill_type="solid")
+                else:
+                    ws_summary.cell(row=row, column=1).fill = PatternFill(start_color="ef9a9a", end_color="ef9a9a", fill_type="solid")
+        
+            # Add total row
+            row = len(issue_types) + 2
+            ws_summary.cell(row=row, column=1, value="Total Issues").font = Font(bold=True)
+            ws_summary.cell(row=row, column=2, value=total_issues).font = Font(bold=True)
+            ws_summary.cell(row=row, column=3, value="100%").font = Font(bold=True)
+        
+            # Auto-adjust column widths for summary
+            for col in ws_summary.columns:
+                max_length = 0
+                column = col[0].column_letter
+                for cell in col:
+                    if cell.value:
+                        cell_length = len(str(cell.value))
+                        if cell_length > max_length:
+                            max_length = cell_length
+            
+                adjusted_width = (max_length + 2) * 1.2
+                ws_summary.column_dimensions[column].width = adjusted_width
+        
+            # Save the workbook
+            wb.save(save_path)
+            messagebox.showinfo("Export Complete", f"Issues exported to {save_path}")
+    
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export issues: {str(e)}")
+
+    def mark_subset_status(self, status):
+        """Mark the selected subset with a status for tracking purposes"""
+        selected_items = self.subset_status_table.selection()
+        if not selected_items:
+            return
+    
+        item = selected_items[0]
+        filename = self.subset_status_table.item(item, "values")[0]  # Get the filename from the UI
+    
+        # We now need to find the full path from subset_stats since we're only displaying filenames
+        file_path = None
+        for stat in self.subset_stats:
+            if stat["filename"] == filename:
+                file_path = stat["file_path"]
+                break
+    
+        if not file_path:
+            messagebox.showerror("Error", f"Could not find full path for: {filename}")
+            return
+    
+        # Create a status marker file or update existing
+        try:
+            marker_file = os.path.join(os.path.dirname(file_path), ".subset_status.json")
+        
+            # Load existing status data if available
+            status_data = {}
+            if os.path.exists(marker_file):
+                with open(marker_file, 'r') as f:
+                    status_data = json.load(f)
+        
+            # Update status for this file
+            status_data[os.path.basename(file_path)] = {
+                "status": status,
+                "updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "by": os.getenv('USERNAME', 'unknown')
+            }
+        
+            # Save back to file
+            with open(marker_file, 'w') as f:
+                json.dump(status_data, f, indent=2)
+        
+            # Update the UI
+            if status == "complete":
+                self.subset_status_table.item(item, tags=("complete",))
+            elif status == "in_progress":
+                self.subset_status_table.item(item, tags=("progress",))
+        
+            messagebox.showinfo("Status Updated", f"Marked subset as {status}")
+    
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not update status: {str(e)}")
+
+
+
+
+
+##################################################################################################################################################
+
+
+    def open_rvtm_subset_management_window(self):
+        self.rvtm_subset_window = tk.Toplevel(self.root)
+        """
+        Open the enhanced RTVM Subset Management window
+        """
+        # Call the new enhanced version
+        self.enhance_rvtm_subset_management_window()
 
 
 
