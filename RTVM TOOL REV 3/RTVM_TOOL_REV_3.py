@@ -1,6 +1,40 @@
+import sys
+import subprocess
+
+def install_and_import(package_name, import_name=None):
+    import_name = import_name or package_name
+    try:
+        __import__(import_name)
+    except ImportError:
+        print(f"Package '{import_name}' not found. Attempting to install '{package_name}'...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
+        try:
+            __import__(import_name)
+        except ImportError:
+            print(f"Failed to install and import '{package_name}'. Please install it manually.")
+            sys.exit(1)
+
+# List of (package_name_on_pip, import_name_in_code)
+required_packages = [
+    ("pandas", "pandas"),
+    ("numpy", "numpy"),
+    ("matplotlib", "matplotlib"),
+    ("openpyxl", "openpyxl"),
+    ("pyspellchecker", "spellchecker"),  # Note the difference here
+    # Tkinter is part of the standard library but may need installation on some systems
+]
+
+# Attempt to install and import each package
+for package_name, import_name in required_packages:
+    install_and_import(package_name, import_name)
+
+
+
+
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox, filedialog, simpledialog
 import re
+import os
 import pandas as pd
 import numpy as np  # Import numpy to check for NaN values
 import matplotlib
@@ -21,8 +55,6 @@ class PatternDialog(tk.Toplevel):
         # Initialize variables
         self.obj_identifier = obj_identifier
         self.di_number = di_number
-        # Remove the incorrect binding
-        # self.table.bind("<<TreeviewSelect>>", self.on_table_row_select)
         self.deletions = []
 
         # Object Identifier
@@ -102,6 +134,11 @@ class PatternDialog(tk.Toplevel):
             self.button_frame, text="Reset", command=self.reset_fields)
         self.reset_button.grid(row=0, column=3, padx=5, pady=5)
 
+        # New Button to create the 180-Vessel Version
+        self.create_180_button = tk.Button(
+            self.button_frame, text="Also create a 180-Vessel Version", command=self.create_180_version)
+        self.create_180_button.grid(row=1, column=0, columnspan=4, padx=5, pady=5)
+
         # Generated Pattern
         self.output_label = tk.Label(self, text="Generated Pattern: For column G")
         self.output_label.grid(row=7, column=0, columnspan=3, sticky="w")
@@ -134,19 +171,18 @@ class PatternDialog(tk.Toplevel):
             self.root.grid_columnconfigure(3, weight=0)
             self.root.grid_columnconfigure(4, weight=0)
 
-
     def generate_pattern(self):
         # Clear output_text
         self.output_text.delete("1.0", tk.END)
         patterns = []
 
-        # Check if we can generate pattern1 and pattern2
-        can_generate_patterns = True
+        # Check if we can generate the pattern
+        can_generate_pattern = True
         error_messages = []
 
         if not self.status_var.get():
             error_messages.append("Contractor Assessed Status dropdown is blank.")
-            can_generate_patterns = False
+            can_generate_pattern = False
 
         if not self.page_sheet_entry.get().strip():
             error_messages.append("Page/Sheet input box is blank.")
@@ -156,8 +192,8 @@ class PatternDialog(tk.Toplevel):
             error_messages.append("Plan View/Section input box is blank.")
             can_generate_patterns = False
 
-        if can_generate_patterns:
-            # Generate patterns
+        if can_generate_pattern:
+            # Generate the first pattern
             obj_identifier = self.obj_identifier_entry.get().upper()
             cdrl_name = self.cdrl_name_entry.get().upper()
             page_sheet = self.page_sheet_entry.get()
@@ -165,29 +201,46 @@ class PatternDialog(tk.Toplevel):
             plan_view = self.plan_view_entry.get()
             plan_view_type = self.plan_view_option_var.get()
             status = self.status_var.get()
-            di_number = self.di_number_entry.get()
 
             detailed_location = f"{cdrl_name}, {page_sheet_type} {page_sheet}, {plan_view_type} {plan_view}"
 
             # First pattern line
             self.pattern1 = f"{obj_identifier};{detailed_location};{status}"
 
-            # Replace 160-WLIC with 180-WLR for the second line
-            detailed_location_wlr = detailed_location.replace("160-WLIC", "180-WLR")
-            self.pattern2 = f"ADD;{di_number};{detailed_location_wlr};{status}"
-
             patterns.append(self.pattern1)
-            patterns.append(self.pattern2)
         else:
             if error_messages:
                 messagebox.showerror("Error", "\n".join(error_messages))
-
-        # Add deletions
-        for del_pattern in self.deletions:
-            patterns.append(del_pattern)
+                return  # Exit the method to avoid adding empty patterns
 
         # Output patterns
         self.output_text.insert(tk.END, "\n".join(patterns))
+
+
+    def create_180_version(self):
+        # Check if the first pattern has been generated
+        if not hasattr(self, 'pattern1'):
+            messagebox.showerror("Error", "Please generate the initial pattern first.")
+            return
+
+        # Generate the second pattern
+        obj_identifier = self.obj_identifier_entry.get().upper()
+        cdrl_name = self.cdrl_name_entry.get().upper()
+        page_sheet = self.page_sheet_entry.get()
+        page_sheet_type = self.page_sheet_option_var.get()
+        plan_view = self.plan_view_entry.get()
+        plan_view_type = self.plan_view_option_var.get()
+        status = self.status_var.get()
+        di_number = self.di_number_entry.get()
+
+        detailed_location = f"{cdrl_name}, {page_sheet_type} {page_sheet}, {plan_view_type} {plan_view}"
+
+        # Replace 160-WLIC with 180-WLR
+        detailed_location_wlr = detailed_location.replace("160-WLIC", "180-WLR")
+        self.pattern2 = f"ADD;{di_number};{detailed_location_wlr};{status}"
+
+        # Append the second pattern to the output
+        self.output_text.insert(tk.END, "\n" + self.pattern2)
 
     def copy_to_clipboard(self):
         # Clear the clipboard
@@ -271,6 +324,9 @@ class RTVMApp:
         self.deletions = []
         self.excel_file_path = ""  # Store the path to the Excel file
         self.pattern_dialog = None  # Reference to PatternDialog instance
+        self.selected_base_path = None  # Will store user-selected base directory path
+        # Add this line to initialize self.current_comments
+        self.current_comments = {}  # To store comments for the current row
 
         # Initialize unique statuses
         self.unique_object_statuses = set()
@@ -296,6 +352,16 @@ class RTVMApp:
         self.down_button = tk.Button(
             self.button_frame_top, text="Down", command=lambda: self.navigate_cells('down'))
         self.down_button.grid(row=0, column=1, padx=5, pady=5)
+
+
+        # Management Button
+        self.management_button = tk.Button(
+            self.button_frame_top, text="Management", command=self.open_management_window)
+        self.management_button.grid(row=0, column=10, padx=5, pady=5)
+        # Add the Tools Button
+        self.tools_button = tk.Button(
+             self.button_frame_top, text="Tools", command=self.open_tools_menu)
+        self.tools_button.grid(row=0, column=11, padx=5, pady=5)
 
         # Jump to Cell Entry
         self.jump_to_label = tk.Label(self.button_frame_top, text="Jump to Row:")
@@ -331,7 +397,7 @@ class RTVMApp:
         self.create_pie_charts_button.grid(row=0, column=8, padx=5, pady=5)
 
         # Show/Hide History Tables Checkbox
-        self.show_history_var = tk.IntVar(value=1)  # 1 means checked (show tables by default)
+        self.show_history_var = tk.IntVar(value=0)  # 0 means unchecked (hide tables by default)
         self.show_history_checkbox = tk.Checkbutton(
             self.button_frame_top,
             text="Show History Tables",
@@ -340,20 +406,30 @@ class RTVMApp:
         )
         self.show_history_checkbox.grid(row=0, column=9, padx=5, pady=5)
 
+        # Show/Hide Progress Bar Checkbox
+        self.show_progress_var = tk.IntVar(value=0)  # 0 means unchecked (hide progress bar by default)
+        self.show_progress_checkbox = tk.Checkbutton(
+            self.button_frame_top,
+            text="Show Progress Bar",
+            variable=self.show_progress_var,
+            command=self.toggle_progress_bar
+        )
+        self.show_progress_checkbox.grid(row=1, column=9, padx=5, pady=5)
+
         # Row Indicator
         self.row_indicator_var = tk.StringVar(value="Row: 0")
         self.row_indicator_label = tk.Label(
             root, textvariable=self.row_indicator_var)
-        self.row_indicator_label.grid(row=1, column=0, sticky="w")
+        self.row_indicator_label.grid(row=1, column=1, sticky="w")
 
         # Specification Text Label and Text Box
         self.spec_text_label = tk.Label(
             root, text="Specification Text")
-        self.spec_text_label.grid(row=2, column=0, columnspan=4, sticky="w")
+        self.spec_text_label.grid(row=2, column=1, columnspan=4, sticky="w")
 
         self.spec_text_box = tk.Text(
             root, height=4, width=70, bg="lightblue")
-        self.spec_text_box.grid(row=3, column=0, columnspan=9, sticky="nsew")
+        self.spec_text_box.grid(row=3, column=1, columnspan=9, sticky="nsew")
         self.spec_text_box.config(state=tk.DISABLED)
 
         # Version and POC Note
@@ -361,20 +437,41 @@ class RTVMApp:
             "Program Version 4\n"
             "POC: Eriks@birdon.us"
         ), justify="left", anchor="w")
-        self.version_note.grid(row=2, column=5, rowspan=6, sticky="nw")
+        self.version_note.grid(row=1, column=6, rowspan=6, sticky="nw")
+
+        # New Label Above Progress Bar
+        self.progress_label = tk.Label(
+            root, text="Progress Bar")
+        self.progress_label.grid(row=4, column=0, sticky="w")
+
+        # Progress Bar Table
+        self.progress_table = ttk.Treeview(
+            root, columns=("Row Number",), show="headings", height=20)
+        self.progress_table.grid(row=5, column=0, sticky="nsew")
+        self.progress_table.heading("Row Number", text="Row Number")
+        self.progress_table.column("Row Number", width=50, anchor="center")
+
+        # Bind click event
+        self.progress_table.bind("<ButtonRelease-1>", self.on_progress_bar_click)
+
+
+        # Initially hide the progress bar table
+        self.progress_label.grid_remove()
+        self.progress_table.grid_remove()
 
         # DI Number Breakdown Label
         self.table_label = tk.Label(
             root, text="DI Number Breakdown")
-        self.table_label.grid(row=4, column=0, sticky="w")
+        self.table_label.grid(row=4, column=1, sticky="w")
 
-        # Table to display the extracted information
-        self.table = ttk.Treeview(root, columns=("VeriDoc Number", "DI Number", "CDRL Subtitle", "Object Status",
-                                                 "Contractor Assessed Status", "Government Assessed Status"),
-                                  show="headings")
-        self.table.grid(row=5, column=0, sticky="nsew")
+        # DI Number Breakdown Table
+        self.table = ttk.Treeview(root, columns=(
+            "VeriDoc Number", "DI Number", "CDRL Subtitle", "Object Status",
+            "Contractor Assessed Status", "Government Assessed Status"),
+            show="headings")
+        self.table.grid(row=5, column=1, sticky="nsew")
 
-        # Configure headings here...
+        # Configure headings
         self.table.heading("VeriDoc Number", text="VeriDoc Number")
         self.table.heading("DI Number", text="DI Number")
         self.table.heading("CDRL Subtitle", text="CDRL Subtitle")
@@ -382,15 +479,15 @@ class RTVMApp:
         self.table.heading("Contractor Assessed Status", text="Contractor Assessed Status")
         self.table.heading("Government Assessed Status", text="Government Assessed Status")
 
-        # New Label Above Comments Section
+        # Comment Section Label
         self.comment_section_label = tk.Label(
             root, text="Comment from Birdon to USCG")
-        self.comment_section_label.grid(row=4, column=1, sticky="w")
+        self.comment_section_label.grid(row=4, column=2, sticky="w")
 
-        # Comment Table to allow user inputs
+        # Comment Table
         self.comment_table = ttk.Treeview(
             root, columns=("Comments",), show="headings")
-        self.comment_table.grid(row=5, column=1, sticky="nsew")
+        self.comment_table.grid(row=5, column=2, sticky="nsew")
         self.comment_table.heading("Comments", text="Comments")
 
         # Bind the right-click event to the comment table
@@ -398,41 +495,39 @@ class RTVMApp:
 
         # Remove double-click editing if desired
         self.comment_table.unbind('<Double-1>')
-        # Or modify the double-click behavior
-        # self.comment_table.bind('<Double-1>', self.on_comment_double_click)
 
-        # New Label Above Proposed Changes Table
+        # Proposed Changes Label
         self.proposed_changes_label = tk.Label(
             root, text="Contractor Proposed Change Request Input")
-        self.proposed_changes_label.grid(row=4, column=2, sticky="w")
+        self.proposed_changes_label.grid(row=4, column=3, sticky="w")
 
         # Proposed Changes Table
         self.proposed_changes_table = ttk.Treeview(
             root, columns=("Pattern",), show="headings")
         self.proposed_changes_table.grid(
-            row=5, column=2, sticky="nsew")
+            row=5, column=3, sticky="nsew")
         self.proposed_changes_table.heading("Pattern", text="Pattern")
 
-        # New Label Above the Contractor Proposed Change Comment History Table
+        # Comment History Label
         self.comment_history_label = tk.Label(
             root, text="Contractor Proposed Change Comment History")
-        self.comment_history_label.grid(row=4, column=3, sticky="w")
+        self.comment_history_label.grid(row=4, column=4, sticky="w")
 
-        # New Table for Contractor Proposed Change Comment History
+        # Comment History Table
         self.comment_history_table = ttk.Treeview(
             root, columns=("History",), show="headings")
-        self.comment_history_table.grid(row=5, column=3, sticky="nsew")
+        self.comment_history_table.grid(row=5, column=4, sticky="nsew")
         self.comment_history_table.heading("History", text="History")
 
-        # New Label Above the Government Adjudication Comment History Table
+        # Government Comment History Label
         self.gov_comment_history_label = tk.Label(
             root, text="Government Adjudication Comment History")
-        self.gov_comment_history_label.grid(row=4, column=4, sticky="w")
+        self.gov_comment_history_label.grid(row=4, column=5, sticky="w")
 
-        # Government Adjudication Comment History Table
+        # Government Comment History Table
         self.gov_comment_history_table = ttk.Treeview(
             root, columns=("History",), show="headings")
-        self.gov_comment_history_table.grid(row=5, column=4, sticky="nsew")
+        self.gov_comment_history_table.grid(row=5, column=5, sticky="nsew")
         self.gov_comment_history_table.heading("History", text="History")
 
         # Configure column widths (Optional)
@@ -447,6 +542,7 @@ class RTVMApp:
         self.proposed_changes_table.column("Pattern", width=400)
         self.comment_history_table.column("History", width=400)
         self.gov_comment_history_table.column("History", width=400)
+        self.progress_table.column("Row Number", width=50)
 
         # Configure styles for highlighting
         self.style = ttk.Style()
@@ -469,15 +565,1817 @@ class RTVMApp:
         self.proposed_changes_table.bind("<Button-3>", self.show_proposed_changes_context_menu)
 
         # Configure grid weights for proper resizing
-        self.root.grid_columnconfigure(0, weight=1)
+        # Initially set weight=0 for progress bar column
+        self.root.grid_columnconfigure(0, weight=0)
         self.root.grid_columnconfigure(1, weight=1)
         self.root.grid_columnconfigure(2, weight=1)
         self.root.grid_columnconfigure(3, weight=1)
         self.root.grid_columnconfigure(4, weight=1)
+        self.root.grid_columnconfigure(5, weight=1)
         self.root.grid_rowconfigure(5, weight=1)
 
         # Initialize the visibility of history tables
         self.toggle_history_tables()
+
+        # Initialize the visibility of progress bar
+        self.toggle_progress_bar()
+
+
+
+
+    def open_tools_menu(self):
+        # Create a new top-level window for tool selection
+        self.tools_menu_window = tk.Toplevel(self.root)
+        self.tools_menu_window.title("Select a Tool")
+        self.tools_menu_window.attributes("-topmost", True)
+        self.tools_menu_window.transient(self.root)
+        self.tools_menu_window.lift()
+
+        # Label
+        tk.Label(self.tools_menu_window, text="Select a Tool:").pack(pady=10)
+
+        # For future scalability, let's store tools in a dictionary
+        # Key: Tool name (string), Value: function to open that tool
+        self.available_tools = {
+            "Compaire Tool": self.open_comair_tool_window,
+            "Remove Previously Submitted Requests": self.open_remove_requests_tool_window,
+            "RTVM Subset Management": self.open_rvtm_subset_management_window
+            # Later on, you can add more tools here:
+            # "Another Tool": self.open_another_tool_window
+        }
+
+        # Create a StringVar and Combobox for tool selection
+        self.selected_tool = tk.StringVar(value="Compaire Tool")
+        tool_list = list(self.available_tools.keys())
+        self.tool_dropdown = ttk.Combobox(
+            self.tools_menu_window, textvariable=self.selected_tool, values=tool_list, state="readonly")
+        self.tool_dropdown.pack(pady=5)
+
+        # Button to open the selected tool
+        open_button = tk.Button(self.tools_menu_window, text="Open Selected Tool", command=self.open_selected_tool)
+        open_button.pack(pady=10)
+
+    def open_selected_tool(self):
+        # Get the currently selected tool name
+        tool_name = self.selected_tool.get()
+        if tool_name in self.available_tools:
+            # Call the corresponding function to open the tool
+            self.tools_menu_window.destroy()  # Close the menu window
+            self.available_tools[tool_name]()
+        else:
+            messagebox.showerror("Error", "Selected tool is not available.")
+
+     #### START OF REMOVAL TOOL
+    def open_remove_requests_tool_window(self):
+        # Create a new window
+        self.remove_requests_window = tk.Toplevel(self.root)
+        self.remove_requests_window.title("Remove Previously Submitted Contractor Proposed Change Request")
+
+        # Explanation Label at the top
+        explanation = ("This tool compares the currently loaded file with an older submission.\n"
+                       "Any previously submitted contractor proposed change requests found in the old file\n"
+                       "will be removed from the new file upon clicking 'Remove Previously Submitted Requests'.")
+        tk.Label(self.remove_requests_window, text=explanation, justify="left").pack(pady=10, padx=10)
+
+        # Frame for displaying current file and old file info
+        files_frame = tk.Frame(self.remove_requests_window)
+        files_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
+
+        # Label for the currently loaded new file
+        tk.Label(files_frame, text="Current (New) File:").grid(row=0, column=0, sticky="w")
+        self.new_file_label_var = tk.StringVar(value=self.excel_file_path if self.excel_file_path else "No File Loaded")
+        tk.Label(files_frame, textvariable=self.new_file_label_var).grid(row=0, column=1, sticky="w")
+
+        # Label and button for uploading old file
+        tk.Label(files_frame, text="Old File:").grid(row=1, column=0, sticky="w")
+        self.old_file_label_var = tk.StringVar(value="No Old File Selected")
+        tk.Label(files_frame, textvariable=self.old_file_label_var).grid(row=1, column=1, sticky="w")
+        self.old_file_button = tk.Button(files_frame, text="Browse Old File", command=self.browse_old_file)
+        self.old_file_button.grid(row=1, column=2, padx=5, sticky="w")
+
+        # Button to remove previously submitted requests
+        self.remove_requests_button = tk.Button(self.remove_requests_window, text="Remove Previously Submitted Requests",
+                                                command=self.remove_previously_submitted_requests)
+        self.remove_requests_button.pack(pady=20)
+
+        # Create a frame for the progress bar
+        self.progress_frame = tk.Frame(self.remove_requests_window)
+        self.progress_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
+        self.progress_frame.grid_remove()  # Hide initially
+
+        tk.Label(self.progress_frame, text="Processing...").pack(side=tk.LEFT, padx=5)
+        self.removal_progress = ttk.Progressbar(self.progress_frame, orient='horizontal', length=300, mode='determinate')
+        self.removal_progress.pack(side=tk.LEFT, padx=5)
+
+
+
+    def browse_old_file(self):
+        file_path = filedialog.askopenfilename(
+            filetypes=[("Excel files", "*.xls;*.xlsx")])
+        if file_path:
+            self.old_file_path = file_path
+            self.old_file_label_var.set(file_path)
+
+    def remove_previously_submitted_requests(self):
+        # Check if main new file and old file are uploaded
+        if not hasattr(self, 'excel_file_path') or not self.excel_file_path:
+            messagebox.showerror("Error", "No main (new) file is loaded. Please upload a main file first.")
+            return
+        if not hasattr(self, 'old_file_path') or not self.old_file_path:
+            messagebox.showerror("Error", "No old file is selected.")
+            return
+
+        try:
+            old_df = pd.read_excel(self.old_file_path)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to read old Excel file: {e}")
+            return
+
+        # Identify columns:
+        object_id_col = 0  # Adjust if needed
+        proposed_changes_col = 6  # Column G is index 6
+
+        # Validate column indexes
+        if object_id_col >= len(self.df.columns) or proposed_changes_col >= len(self.df.columns):
+            messagebox.showerror("Error", "Columns for Object Identifier or Proposed Changes not found in new file.")
+            return
+
+        if object_id_col >= len(old_df.columns) or proposed_changes_col >= len(old_df.columns):
+            messagebox.showerror("Error", "Columns for Object Identifier or Proposed Changes not found in old file.")
+            return
+
+        # Convert object ID columns to string
+        self.df.iloc[:, object_id_col] = self.df.iloc[:, object_id_col].astype(str)
+        old_df.iloc[:, object_id_col] = old_df.iloc[:, object_id_col].astype(str)
+
+        # Create a dictionary from old_df: {object_id: set_of_old_patterns}
+        old_patterns_map = {}
+        for idx, row in old_df.iterrows():
+            obj_id = row.iloc[object_id_col]
+            old_patterns_str = row.iloc[proposed_changes_col]
+            if pd.isna(old_patterns_str):
+                old_patterns_str = ""
+            old_lines = [line.strip() for line in old_patterns_str.split('\n') if line.strip()]
+            old_patterns_set = set(old_lines)
+            old_patterns_map[obj_id] = old_patterns_set
+
+        changes_made = False
+
+        # Remove previously submitted requests from the in-memory DataFrame
+        for idx, row in self.df.iterrows():
+            obj_id = row.iloc[object_id_col]
+            new_patterns_str = row.iloc[proposed_changes_col]
+            if pd.isna(new_patterns_str):
+                new_patterns_str = ""
+
+            new_lines = [line.strip() for line in new_patterns_str.split('\n') if line.strip()]
+
+            if obj_id in old_patterns_map:
+                old_patterns_set = old_patterns_map[obj_id]
+                # Filter out any patterns that exist in old file
+                filtered_lines = [line for line in new_lines if line not in old_patterns_set]
+                if len(filtered_lines) != len(new_lines):
+                    changes_made = True
+                    updated_str = '\n'.join(filtered_lines)
+                    self.df.iat[idx, proposed_changes_col] = updated_str
+
+        if not changes_made:
+            messagebox.showinfo("No Changes", "No previously submitted requests were found to remove.")
+            return
+
+        # If changes were made, update the Excel file preserving formatting
+        from openpyxl import load_workbook
+
+        try:
+            wb = load_workbook(self.excel_file_path)
+            ws = wb.active  # Adjust if you need a specific sheet
+
+            # Update only the changed cells (patterns in column G)
+            # DataFrame rows start at 0, Excel rows start at 2 (assuming row 1 is header)
+            for idx, row in self.df.iterrows():
+                new_content = row.iloc[proposed_changes_col]
+                if pd.isna(new_content):
+                    new_content = ""
+                elif not isinstance(new_content, str):
+                    new_content = str(new_content)
+
+                excel_row = idx + 2  # DataFrame index 0 -> Excel row 2
+                ws.cell(row=excel_row, column=7, value=new_content)  # Column G = 7
+
+            wb.save(self.excel_file_path)
+
+            # Update the DataFrame in memory is already done (self.df was updated above)
+            messagebox.showinfo("Success", "Previously submitted requests have been removed and the file has been updated.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save updated file: {e}")
+
+### END of removal Tool
+
+### START OF COMPAIRE TOOL 
+    def open_comair_tool_window(self):
+        # This is your original `open_tools_window()` code
+        # Renamed to `open_comair_tool_window()` for clarity.
+
+        self.comair_window = tk.Toplevel(self.root)
+        self.comair_window.title("Comair Tool")
+
+        # Set window size (optional)
+        self.comair_window.geometry("800x600")  # Adjust as needed
+
+        # The rest of the original open_tools_window code goes here...
+        # For example, your file comparison UI and logic:
+        file_frame = tk.Frame(self.comair_window)
+        file_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
+
+        self.file1_label = tk.Label(file_frame, text="Select First Excel File:")
+        self.file1_label.grid(row=0, column=0, sticky="w")
+        self.file1_entry = tk.Entry(file_frame, width=50)
+        self.file1_entry.grid(row=0, column=1, padx=5)
+        self.file1_button = tk.Button(file_frame, text="Browse", command=self.browse_file1)
+        self.file1_button.grid(row=0, column=2, padx=5)
+
+        self.file2_label = tk.Label(file_frame, text="Select Second Excel File:")
+        self.file2_label.grid(row=1, column=0, sticky="w")
+        self.file2_entry = tk.Entry(file_frame, width=50)
+        self.file2_entry.grid(row=1, column=1, padx=5)
+        self.file2_button = tk.Button(file_frame, text="Browse", command=self.browse_file2)
+        self.file2_button.grid(row=1, column=2, padx=5)
+
+        self.compare_button = tk.Button(self.comair_window, text="Compare Files", command=self.compare_files)
+        self.compare_button.pack(pady=10)
+
+        self.save_results_button = tk.Button(self.comair_window, text="Save Results", command=self.save_comparison_results)
+        self.save_results_button.pack(pady=5)
+
+        self.results_frame = tk.Frame(self.comair_window)
+        self.results_frame.pack(fill=tk.BOTH, expand=True)
+
+        columns = ("Row", "Column", "Value in File 1", "Value in File 2")
+        self.results_table = ttk.Treeview(self.results_frame, columns=columns, show="headings")
+        self.results_table.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        for col in columns:
+            self.results_table.heading(col, text=col)
+            self.results_table.column(col, anchor='center', width=150)
+
+        scrollbar = ttk.Scrollbar(self.results_frame, orient=tk.VERTICAL, command=self.results_table.yview)
+        self.results_table.configure(yscroll=scrollbar.set)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+
+
+    def save_comparison_results(self):
+        # Get the data from the results table
+        rows = self.results_table.get_children()
+        if not rows:
+            messagebox.showinfo("No Data", "No differences to save.")
+            return
+
+        # Prepare data for DataFrame
+        data = []
+        for row_id in rows:
+            row = self.results_table.item(row_id)['values']
+            data.append(row)
+
+        df = pd.DataFrame(data, columns=['Row', 'Column', 'Value in File 1', 'Value in File 2'])
+
+        # Ask user for a file location
+        file_path = filedialog.asksaveasfilename(defaultextension=".xlsx",
+                                                 filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+                                                 title="Save Comparison Results")
+        if file_path:
+            try:
+                df.to_excel(file_path, index=False)
+                messagebox.showinfo("Success", f"Results saved to {file_path}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save results: {e}")
+
+    def get_differences(self, df1, df2):
+        try:
+            # Align the DataFrames
+            df1, df2 = df1.align(df2, join='outer', axis=1)
+            df1.fillna('', inplace=True)
+            df2.fillna('', inplace=True)
+
+            # Use pandas built-in comparison
+            diff = df1.compare(df2, keep_equal=False)
+            diff.reset_index(inplace=True)
+
+            # Prepare a list to collect differences
+            differences = []
+
+            for index, row in diff.iterrows():
+                row_num = row['index'] + 2  # Adjust for human-readable indexing (assuming header row is row 1)
+                for col in df1.columns:
+                    if col in diff.columns.get_level_values(0):
+                        val1 = diff.at[index, (col, 'self')]
+                        val2 = diff.at[index, (col, 'other')]
+                        differences.append({
+                            'Row': row_num,
+                            'Column': col,
+                            'Value in File 1': val1,
+                            'Value in File 2': val2
+                        })
+
+            # Create the DataFrame from the list of differences
+            diff_df = pd.DataFrame(differences, columns=['Row', 'Column', 'Value in File 1', 'Value in File 2'])
+            return diff_df
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to compare Excel files: {e}")
+            return pd.DataFrame()
+
+
+    def browse_file1(self):
+        file_path = filedialog.askopenfilename(
+            filetypes=[("Excel files", "*.xls;*.xlsx")])
+        if file_path:
+            self.file1_entry.delete(0, tk.END)
+            self.file1_entry.insert(0, file_path)
+
+    def browse_file2(self):
+        file_path = filedialog.askopenfilename(
+            filetypes=[("Excel files", "*.xls;*.xlsx")])
+        if file_path:
+            self.file2_entry.delete(0, tk.END)
+            self.file2_entry.insert(0, file_path)
+
+
+    def compare_files(self):
+        file1_path = self.file1_entry.get()
+        file2_path = self.file2_entry.get()
+
+        if not file1_path or not file2_path:
+            messagebox.showerror("Error", "Please select both Excel files to compare.")
+            return
+
+        try:
+            df1 = pd.read_excel(file1_path)
+            df2 = pd.read_excel(file2_path)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to read Excel files: {e}")
+            return
+
+        # Clear previous results
+        self.results_table.delete(*self.results_table.get_children())
+
+        # Compare the dataframes
+        try:
+            diff_df = self.get_differences(df1, df2)
+            if diff_df.empty:
+                messagebox.showinfo("No Differences", "The two files are identical.")
+            else:
+                # Display differences in the results table
+                for index, row in diff_df.iterrows():
+                    self.results_table.insert("", "end", values=(row['Row'], row['Column'], row['Value in File 1'], row['Value in File 2']))
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to compare Excel files: {e}")
+
+
+
+
+### End of compair tool ################################################################################################################################################################################################################################
+
+### Start of RTVM Subsets tool pack ################################################################################################################################################################################################################################
+
+    def open_rvtm_subset_management_window(self):
+            self.rvtm_subset_window = tk.Toplevel(self.root)
+            self.rvtm_subset_window.title("RTVM Subset Management")
+
+            explanation = (
+                "This RTVM Subset Management tool allows you to:\n"
+                "- Create a summary report of verification data\n"
+                "- Export photos of the generated report\n"
+                "- Create subsets of the RTVM based on predefined SWBS groups\n"
+                "- Recombine these subsets back into a single file\n"
+                "- Merge a single subset into the main RTVM file\n\n"
+                "The data is taken from the currently loaded main RTVM file.\n"
+                "Please select a base location first."
+            )
+            tk.Label(self.rvtm_subset_window, text=explanation, justify="left").pack(pady=10, padx=10)
+
+            top_frame = tk.Frame(self.rvtm_subset_window)
+            top_frame.pack(fill='x', padx=10, pady=10)
+
+            # Button to select the base location
+            select_location_button = tk.Button(
+                top_frame, text="Select Base Location", command=self.select_base_location
+            )
+            select_location_button.grid(row=0, column=0, padx=5, pady=5)
+
+            # Display the currently loaded file name
+            tk.Label(top_frame, text="Current (New) File:", anchor='w').grid(row=0, column=1, sticky='w')
+            self.file_name_var = tk.StringVar(value=self.excel_file_path if self.excel_file_path else "No File Loaded")
+            tk.Label(top_frame, textvariable=self.file_name_var, width=50, anchor='w').grid(row=0, column=2, padx=5, pady=5, sticky='ew')
+
+            # Create Summary Report Button
+            self.create_report_button = tk.Button(
+                top_frame, text="Create Summary Report", command=self.create_summary_report
+            )
+            self.create_report_button.grid(row=0, column=3, padx=5, pady=5)
+
+            # Export Photos Button
+            self.export_photos_button = tk.Button(
+                top_frame, text="Export Photos of Report", command=self.export_photos_of_report
+            )
+            self.export_photos_button.grid(row=0, column=4, padx=5, pady=5)
+
+            # Create Subsets Button
+            self.create_subsets_button = tk.Button(
+                top_frame, text="Create Subsets", command=self.create_subsets
+            )
+            self.create_subsets_button.grid(row=0, column=5, padx=5, pady=5)
+
+            # Recombine Subsets Button
+            self.recombine_subsets_button = tk.Button(
+                top_frame, text="Recombine Subsets", command=self.recombine_subsets
+            )
+            self.recombine_subsets_button.grid(row=0, column=6, padx=5, pady=5)
+
+            # Merge Single Subset Button
+            self.merge_single_subset_button = tk.Button(
+                top_frame, text="Merge Single Subset", command=self.merge_single_subset
+            )
+            self.merge_single_subset_button.grid(row=0, column=7, padx=5, pady=5)
+
+            self.set_assigned_verification_cells()
+
+
+    def select_base_location(self):
+            # Allow the user to select a folder where PMR-related files and subsets will be saved
+            selected_directory = filedialog.askdirectory(title="Select Base Directory for PMR Files")
+            if selected_directory:
+                self.selected_base_path = selected_directory
+                messagebox.showinfo("Base Location Selected", f"Base location set to: {self.selected_base_path}")
+            else:
+                messagebox.showwarning("No Selection", "No base location selected. Using current directory if needed.")
+
+    def set_assigned_verification_cells(self):
+        # Check if self.df is loaded
+        if self.df is None:
+            messagebox.showerror("Error", "No main file loaded. Please upload a main file before using this tool.")
+            return
+
+        assigned_column = "Assigned Verification Documents"
+        if assigned_column in self.df.columns:
+            self.assigned_verification_cells = self.df[assigned_column].tolist()
+        else:
+            messagebox.showerror("Error", f"Column '{assigned_column}' not found in the loaded DataFrame.")
+            self.assigned_verification_cells = []
+
+
+    # Below are the methods from the provided code snippet, adapted to use self.df, self.assigned_verification_cells,
+    # self.excel_file_path, and the currently loaded main file. The upload functionality and separate class have been removed.
+
+    def create_summary_report(self):
+        # Collect data from all Assigned Verification Documents
+        data_list = []
+        for cell_content in self.assigned_verification_cells:
+            # Convert cell_content to string to avoid float error
+            if pd.isna(cell_content):
+                continue
+            cell_str = str(cell_content)
+            if not cell_str or cell_str.strip().lower() == "nan":
+                continue
+            # Split entries separated by lines of underscores
+            entries = cell_str.split('______________________')
+            for entry in entries:
+                entry = entry.strip()
+                if not entry:
+                    continue
+                # Initialize variables
+                data = {
+                    'Object Identifier': "",
+                    'DI Number': "",
+                    'Government Assessed Status': "",
+                    'Contractor Assessed Status': ""
+                }
+                # Split entry into lines
+                lines = entry.split('\n')
+                for line in lines:
+                    line = line.strip()
+                    if ':' in line:
+                        key, value = line.split(':', 1)
+                        key = key.strip()
+                        value = value.strip()
+                        if key in data:
+                            data[key] = value
+                data_list.append(data)
+
+        # Now, data_list contains all the entries
+        if not data_list:
+            messagebox.showinfo("No Data", "No Assigned Verification Documents data found.")
+            return
+
+        # Convert to a DataFrame
+        df_data = pd.DataFrame(data_list)
+
+        # Now, group DI Numbers into SWBS groups as provided
+        swbs_groups = {
+            'SWBS 000': [
+                '040-001', '042-001', '042-003', '042-005', '045-001',
+                '068-001', '068-002', '068-003', '070-001', '073-001',
+                '073-003', '073-006', '073-007', '073-008', '073-009',
+                '076-002', '077-001', '077-002', '083-002', '085-004',
+                '086-003', '088-001', '088-002', '088-005', '088-007',
+                '092-001', '096-004'
+            ],
+            'SWBS 100': [
+                '100-001', '100-002', '100-004', '100-006', '100-010',
+                '100-011', '100-012', '100-013'
+            ],
+            'SWBS 200': [
+                '200-001', '200-003', '233-001', '245-001', '245-002',
+                '245-003', '249-001', '249-002', '249-003', '249-004',
+                '259-001'
+            ],
+            'SWBS 202': [
+                '202-012'
+            ],
+            'SWBS 300': [
+                '300-001', '300-002', '300-003', '300-006', '300-007',
+                '300-008', '300-009', '300-010', '300-011', '302-001',
+                '310-001', '320-003', '303-001'
+            ],
+            'SWBS 400': [
+                '400-001', '400-002', '400-003', '400-010', '400-011',
+                '402-001', '402-002', '405-001', '407-001', '428-001',
+                '432-001', '432-002', '435-001', '436-002', '440-001'
+            ],
+            'SWBS 500': [
+                '508-001', '555-001', '580-001', '580-004', '583-001',
+                '589-002', '593-002', '593-005','521-003'
+            ],
+            'SWBS 600': [
+                '602-001', '604-001', '634-001', '640-002'
+            ]
+        }
+
+        # Add DI Numbers that start with specific numbers
+        for swbs in swbs_groups:
+            if swbs == 'SWBS 000':
+                starts_with = '0'
+            elif swbs == 'SWBS 100':
+                starts_with = '1'
+            elif swbs == 'SWBS 200':
+                starts_with = '2'
+            elif swbs == 'SWBS 300':
+                starts_with = '3'
+            elif swbs == 'SWBS 400':
+                starts_with = '4'
+            elif swbs == 'SWBS 500':
+                starts_with = '5'
+            elif swbs == 'SWBS 600':
+                starts_with = '6'
+            else:
+                starts_with = None
+
+            if starts_with:
+                # Get DI Numbers that start with the specified number
+                di_numbers = df_data['DI Number'].unique()
+                additional_di_numbers = [di for di in di_numbers if di.startswith(starts_with)]
+                # Add them to the group if not already present
+                for di in additional_di_numbers:
+                    if di not in swbs_groups[swbs]:
+                        swbs_groups[swbs].append(di)
+
+        # Now, create a new window to display the pie charts
+        self.report_window = tk.Toplevel(self.root)
+        self.report_window.title("Summary Report")
+
+        # Create a notebook to organize the charts
+        notebook = ttk.Notebook(self.report_window)
+        notebook.pack(fill='both', expand=True)
+
+        # Create tabs for overall data
+        overall_tabs = ttk.Notebook(self.report_window)
+        notebook.add(overall_tabs, text='Overall Summary')
+        self.figures_data = []
+        # Overall Government Assessed Status
+        gov_status_counts = df_data['Government Assessed Status'].value_counts()
+
+        # Define colors
+        status_colors = {
+            'Disagree': 'red',
+            'Agree': 'green',
+            'Pending Review': 'orange',
+            'Awaiting Input': 'blue'
+        }
+
+        gov_colors = [status_colors.get(status, 'grey') for status in gov_status_counts.index]
+
+        gov_frame = ttk.Frame(overall_tabs)
+        overall_tabs.add(gov_frame, text='Government Assessed Status')
+        fig1, ax1 = plt.subplots(figsize=(6, 6))
+        wedges1, texts1, autotexts1 = ax1.pie(
+            gov_status_counts, labels=gov_status_counts.index,
+            autopct='%1.1f%%', startangle=90, colors=gov_colors
+        )
+        ax1.axis('equal')
+        ax1.set_title('Overall Government Assessed Status')
+
+        # Store data for exporting
+        self.figures_data = []
+        self.figures_data.append({
+            'swbs': 'Overall Status',
+            'chart_type': 'Government Assessed Status',
+            'counts': gov_status_counts.values,
+            'labels': gov_status_counts.index.tolist(),
+            'colors': gov_colors,
+            'table_data': gov_status_counts.reset_index().values.tolist(),
+            'table_columns': ['Status', 'Count']
+        })
+
+        canvas1 = FigureCanvasTkAgg(fig1, master=gov_frame)
+        canvas1.draw()
+        canvas1.get_tk_widget().pack(fill='both', expand=True)
+
+        # Overall Contractor Assessed Status
+        contractor_status_counts = df_data['Contractor Assessed Status'].value_counts()
+
+        # Define colors for Contractor Assessed Status
+        contractor_status_colors = {
+            'Satisfactory': 'green',
+            'Unsatisfactory': 'red',
+            'TBD': 'grey'
+        }
+
+        contractor_colors = [contractor_status_colors.get(status, 'grey') for status in contractor_status_counts.index]
+
+        contractor_frame = ttk.Frame(overall_tabs)
+        overall_tabs.add(contractor_frame, text='Contractor Assessed Status')
+        fig2, ax2 = plt.subplots(figsize=(6, 6))
+        wedges2, texts2, autotexts2 = ax2.pie(
+            contractor_status_counts, labels=contractor_status_counts.index,
+            autopct='%1.1f%%', startangle=90, colors=contractor_colors
+        )
+        ax2.axis('equal')
+        ax2.set_title('Overall Contractor Assessed Status')
+
+        self.figures_data.append({
+            'swbs': 'Overall Status',
+            'chart_type': 'Contractor Assessed Status',
+            'counts': contractor_status_counts.values,
+            'labels': contractor_status_counts.index.tolist(),
+            'colors': contractor_colors,
+            'table_data': contractor_status_counts.reset_index().values.tolist(),
+            'table_columns': ['Status', 'Count']
+        })
+
+        canvas2 = FigureCanvasTkAgg(fig2, master=contractor_frame)
+        canvas2.draw()
+        canvas2.get_tk_widget().pack(fill='both', expand=True)
+
+        # Overall DI Number Distribution
+        di_number_counts = df_data['DI Number'].value_counts()
+        di_frame = ttk.Frame(overall_tabs)
+        overall_tabs.add(di_frame, text='DI Number Distribution')
+        fig3, ax3 = plt.subplots(figsize=(6, 6))
+        ax3.pie(
+            di_number_counts, labels=di_number_counts.index,
+            autopct='%1.1f%%', startangle=90
+        )
+        ax3.axis('equal')
+        ax3.set_title('Overall DI Number Distribution')
+
+        self.figures_data.append({
+            'swbs': 'Overall Status',
+            'chart_type': 'DI Number Distribution',
+            'counts': di_number_counts.values,
+            'labels': di_number_counts.index.tolist(),
+            'colors': None,  # No specific colors
+            'table_data': di_number_counts.reset_index().values.tolist(),
+            'table_columns': ['DI Number', 'Count']
+        })
+
+        canvas3 = FigureCanvasTkAgg(fig3, master=di_frame)
+        canvas3.draw()
+        canvas3.get_tk_widget().pack(fill='both', expand=True)
+
+        # For each SWBS group, create a tab
+        for swbs, di_numbers in swbs_groups.items():
+             # Strip spaces from swbs to avoid mismatch
+            swbs = swbs.strip()
+
+            # Filter the data for this SWBS group
+            df_swbs = df_data[df_data['DI Number'].isin(di_numbers)]
+            if df_swbs.empty:
+                continue
+
+            swbs_notebook = ttk.Notebook(self.report_window)
+            notebook.add(swbs_notebook, text=swbs)
+
+            # Government Assessed Status for SWBS
+            gov_status_counts_swbs = df_swbs['Government Assessed Status'].value_counts()
+            gov_colors_swbs = [status_colors.get(status, 'grey') for status in gov_status_counts_swbs.index]
+
+            gov_frame_swbs = ttk.Frame(swbs_notebook)
+            swbs_notebook.add(gov_frame_swbs, text='Government Assessed Status')
+            fig_swbs_gov, ax_swbs_gov = plt.subplots(figsize=(6, 6))
+            wedges_swbs_gov, texts_swbs_gov, autotexts_swbs_gov = ax_swbs_gov.pie(
+                gov_status_counts_swbs, labels=gov_status_counts_swbs.index,
+                autopct='%1.1f%%', startangle=90, colors=gov_colors_swbs
+            )
+            ax_swbs_gov.axis('equal')
+            ax_swbs_gov.set_title(f'{swbs} - Government Assessed Status')
+
+            self.figures_data.append({
+                'swbs': swbs.replace('SWBS ', ''),
+                'chart_type': 'Government Assessed Status',
+                'counts': gov_status_counts_swbs.values,
+                'labels': gov_status_counts_swbs.index.tolist(),
+                'colors': gov_colors_swbs,
+                'table_data': gov_status_counts_swbs.reset_index().values.tolist(),
+                'table_columns': ['Status', 'Count']
+            })
+
+            canvas_swbs_gov = FigureCanvasTkAgg(fig_swbs_gov, master=gov_frame_swbs)
+            canvas_swbs_gov.draw()
+            canvas_swbs_gov.get_tk_widget().pack(fill='both', expand=True)
+
+            # Contractor Assessed Status for SWBS
+            contractor_status_counts_swbs = df_swbs['Contractor Assessed Status'].value_counts()
+            contractor_colors_swbs = [contractor_status_colors.get(status, 'grey') for status in contractor_status_counts_swbs.index]
+
+            contractor_frame_swbs = ttk.Frame(swbs_notebook)
+            swbs_notebook.add(contractor_frame_swbs, text='Contractor Assessed Status')
+            fig_swbs_contractor, ax_swbs_contractor = plt.subplots(figsize=(6, 6))
+            wedges_swbs_contractor, texts_swbs_contractor, autotexts_swbs_contractor = ax_swbs_contractor.pie(
+                contractor_status_counts_swbs, labels=contractor_status_counts_swbs.index,
+                autopct='%1.1f%%', startangle=90, colors=contractor_colors_swbs
+            )
+            ax_swbs_contractor.axis('equal')
+            ax_swbs_contractor.set_title(f'{swbs} - Contractor Assessed Status')
+
+            self.figures_data.append({
+                'swbs': swbs.replace('SWBS ', ''),
+                'chart_type': 'Contractor Assessed Status',
+                'counts': contractor_status_counts_swbs.values,
+                'labels': contractor_status_counts_swbs.index.tolist(),
+                'colors': contractor_colors_swbs,
+                'table_data': contractor_status_counts_swbs.reset_index().values.tolist(),
+                'table_columns': ['Status', 'Count']
+            })
+
+            canvas_swbs_contractor = FigureCanvasTkAgg(fig_swbs_contractor, master=contractor_frame_swbs)
+            canvas_swbs_contractor.draw()
+            canvas_swbs_contractor.get_tk_widget().pack(fill='both', expand=True)
+
+            # DI Number Distribution for SWBS
+            di_number_counts_swbs = df_swbs['DI Number'].value_counts()
+            di_frame_swbs = ttk.Frame(swbs_notebook)
+            swbs_notebook.add(di_frame_swbs, text='DI Number Distribution')
+            fig_swbs_di, ax_swbs_di = plt.subplots(figsize=(6, 6))
+            ax_swbs_di.pie(
+                di_number_counts_swbs, labels=di_number_counts_swbs.index,
+                autopct='%1.1f%%', startangle=90
+            )
+            ax_swbs_di.axis('equal')
+            ax_swbs_di.set_title(f'{swbs} - DI Number Distribution')
+
+            self.figures_data.append({
+                'swbs': swbs.replace('SWBS ', ''),
+                'chart_type': 'DI Number Distribution',
+                'counts': di_number_counts_swbs.values,
+                'labels': di_number_counts_swbs.index.tolist(),
+                'colors': None,  # No specific colors
+                'table_data': di_number_counts_swbs.reset_index().values.tolist(),
+                'table_columns': ['DI Number', 'Count']
+            })
+
+            canvas_swbs_di = FigureCanvasTkAgg(fig_swbs_di, master=di_frame_swbs)
+            canvas_swbs_di.draw()
+            canvas_swbs_di.get_tk_widget().pack(fill='both', expand=True)
+
+            
+    def export_photos_of_report(self):
+        if not hasattr(self, 'figures_data') or not self.figures_data:
+            messagebox.showwarning("No Report Generated", "Please create the summary report first.")
+            return
+
+        if not self.selected_base_path:
+            messagebox.showerror("No Base Location", "Please select a base location before exporting photos.")
+            return
+
+        # Prompt for PMR number
+        pmr_number = simpledialog.askinteger("PMR Number", "Enter the PMR number:")
+        if pmr_number is None:
+            return  # User canceled
+
+        pmr_folder = os.path.join(self.selected_base_path, f"PMR {pmr_number}")
+
+        # Create the PMR folder if it doesn't exist
+        if not os.path.exists(pmr_folder):
+            os.makedirs(pmr_folder)
+
+        for data in self.figures_data:
+            swbs = data['swbs']
+            chart_type = data['chart_type']
+            counts = data['counts']
+            labels = data['labels']
+            colors = data['colors']
+            table_data = data['table_data']
+            table_columns = data['table_columns']
+
+            # Strip spaces from swbs to ensure exact match
+            swbs = swbs.strip()
+
+            if swbs == 'Overall Status':
+                swbs_folder = os.path.join(pmr_folder, "Overall Status")
+            else:
+                swbs_folder = os.path.join(pmr_folder, f"{swbs} SWBS", "Status Photos")
+
+            if not os.path.exists(swbs_folder):
+                os.makedirs(swbs_folder)
+
+            # Recreate the figure
+            fig, ax = plt.subplots(figsize=(6, 6))
+            if colors:
+                ax.pie(
+                    counts, labels=labels,
+                    autopct='%1.1f%%', startangle=90, colors=colors
+                )
+            else:
+                ax.pie(
+                    counts, labels=labels,
+                    autopct='%1.1f%%', startangle=90
+                )
+            ax.axis('equal')
+            ax.set_title(f"{swbs} - {chart_type}")
+
+            # Save the figure
+            filename = f"PMR {pmr_number} - SWBS {swbs} - {chart_type}.png"
+            save_path = os.path.join(swbs_folder, filename)
+        
+            # Ensure directories exist before saving
+            if not os.path.exists(swbs_folder):
+                os.makedirs(swbs_folder)
+
+            fig.savefig(save_path, bbox_inches='tight')
+            plt.close(fig)
+
+            # Prepare data for Excel export
+            if swbs == 'Overall Status':
+                excel_filename = f"PMR {pmr_number} - Overall Status - Raw Data Export.xlsx"
+                excel_save_path = os.path.join(swbs_folder, excel_filename)
+            else:
+                excel_filename = f"PMR {pmr_number} - SWBS {swbs} - Raw Data Export.xlsx"
+                excel_save_path = os.path.join(swbs_folder, excel_filename)
+
+            # Write the data to Excel
+            table_df = pd.DataFrame(table_data, columns=table_columns)
+            sheet_name = chart_type
+            if not os.path.exists(excel_save_path):
+                with pd.ExcelWriter(excel_save_path, engine='openpyxl') as writer:
+                    table_df.to_excel(writer, sheet_name=sheet_name, index=False)
+            else:
+                with pd.ExcelWriter(excel_save_path, engine='openpyxl', mode='a', if_sheet_exists='overlay') as writer:
+                    table_df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+        messagebox.showinfo("Export Completed", f"All charts have been exported to {pmr_folder}")
+
+
+
+    def create_subsets(self):
+        import shutil
+        from openpyxl import load_workbook
+        from copy import copy
+        from tkinter import ttk, messagebox, simpledialog, filedialog
+        import threading
+        import queue
+        import os
+
+        if self.selected_base_path is None:
+            messagebox.showerror("No Base Location", "Please select a base location before creating subsets.")
+            return
+
+        if not self.excel_file_path:
+            messagebox.showwarning("No File", "Please upload an Excel file first.")
+            return
+
+        # Prompt the user for the PMR number
+        pmr_number = simpledialog.askinteger("PMR Number", "Enter the PMR number:")
+        if pmr_number is None:
+            return  # User canceled
+
+        pmr_folder = os.path.join(self.selected_base_path, f"PMR {pmr_number}")
+
+        # Create the PMR folder if it doesn't exist
+        if not os.path.exists(pmr_folder):
+            os.makedirs(pmr_folder)
+
+        # Check if template_file_path is defined
+        if not hasattr(self, 'template_file_path') or not self.template_file_path:
+            # Ask the user if they want to upload a template file
+            if messagebox.askyesno("No Template File", "No template file is currently selected.\nWould you like to select one now?"):
+                template_file_path = filedialog.askopenfilename(
+                    title="Select Template Excel File",
+                    filetypes=[("Excel files", "*.xls;*.xlsx")]
+                )
+                if not template_file_path:
+                    messagebox.showwarning("No Template File", "No template Excel file was selected. Cannot proceed.")
+                    return
+                self.template_file_path = template_file_path
+            else:
+                # User chose not to select a template file
+                return
+
+        template_file_path = self.template_file_path
+
+        # Define the SWBS groups and DI Numbers (unchanged)
+        swbs_groups = {
+            'SWBS 000': [
+                '040-001', '042-001', '042-003', '042-005', '045-001',
+                '068-001', '068-002', '068-003', '070-001', '073-001',
+                '073-003', '073-006', '073-007', '073-008', '073-009',
+                '076-002', '077-001', '077-002', '083-002', '085-004',
+                '086-003', '088-001', '088-002', '088-005', '088-007',
+                '092-001', '096-004'
+            ],
+            'SWBS 100': [
+                '100-001', '100-002', '100-004', '100-006', '100-010',
+                '100-011', '100-012', '100-013'
+            ],
+            'SWBS 200': [
+                '200-001', '200-003', '233-001', '245-001', '245-002',
+                '245-003', '249-001', '249-002', '249-003', '249-004',
+                '259-001'
+            ],
+            'SWBS 202': [
+                '202-012'
+            ],
+            'SWBS 300': [
+                '300-001', '300-002', '300-003', '300-006', '300-007',
+                '300-008', '300-009', '300-010', '300-011', '302-001',
+                '310-001', '320-003', '303-001'
+            ],
+            'SWBS 400': [
+                '400-001', '400-002', '400-003', '400-010', '400-011',
+                '402-001', '402-002', '405-001', '407-001', '428-001',
+                '432-001', '432-002', '435-001', '436-002', '440-001'
+            ],
+            'SWBS 500': [
+                '508-001', '555-001', '580-001', '580-004', '583-001',
+                '589-002', '593-002', '593-005','521-003'
+            ],
+            'SWBS 600': [
+                '602-001', '604-001', '634-001', '640-002'
+            ]
+        }
+
+        def process_data(progress_queue):
+            print("Starting recombination process...")
+            # Create a set of all DI Numbers for quick lookup
+            all_di_numbers = set()
+            di_number_to_swbs = {}
+            for swbs, di_numbers in swbs_groups.items():
+                for di_number in di_numbers:
+                    all_di_numbers.add(di_number)
+                    di_number_to_swbs[di_number] = swbs
+
+            # Copy the template file to create subset files
+            di_number_to_file_path = {}
+            for swbs, di_numbers in swbs_groups.items():
+                swbs_number = swbs.replace('SWBS ', '')
+                swbs_folder = os.path.join(pmr_folder, f"{swbs_number} SWBS")
+                if not os.path.exists(swbs_folder):
+                    os.makedirs(swbs_folder)
+
+                for di_number in di_numbers:
+                    filename = f"{di_number} - Revision X - RTVM Subset.xlsx"
+                    dest_file_path = os.path.join(swbs_folder, filename)
+
+                    try:
+                        shutil.copyfile(template_file_path, dest_file_path)
+                        di_number_to_file_path[di_number] = dest_file_path
+                    except Exception as e:
+                        progress_queue.put(('error', f"An error occurred while copying the template file:\n{e}"))
+                        return
+
+            # Now, process the main Excel file
+            try:
+                print("Starting recombination process..2.")
+                wb_main = load_workbook(filename=self.excel_file_path)
+            except Exception as e:
+                progress_queue.put(('error', f"Failed to open the main Excel file:\n{e}"))
+                return
+
+            if 'RTVM' not in wb_main.sheetnames:
+                progress_queue.put(('error', "The sheet 'RTVM' was not found in the Excel file."))
+                return
+            ws_main = wb_main['RTVM']
+
+            total_rows = ws_main.max_row - 1
+            progress_queue.put(('total', total_rows))
+
+            di_number_to_wb = {}
+            di_number_to_ws = {}
+            di_number_to_next_row = {}
+
+            for idx, row in enumerate(ws_main.iter_rows(min_row=2, values_only=False), start=1):
+                progress_queue.put(('progress', idx))
+
+                cell_f = row[5]
+                cell_value = cell_f.value
+
+                if cell_value:
+                    entries = cell_value.split('______________________')
+                    di_numbers_in_cell = set()
+                    for entry in entries:
+                        entry = entry.strip()
+                        if not entry:
+                            continue
+                        lines = entry.split('\n')
+                        for line in lines:
+                            line = line.strip()
+                            if line.startswith('DI Number:'):
+                                di_number = line[len('DI Number:'):].strip()
+                                if di_number:
+                                    di_numbers_in_cell.add(di_number)
+
+                    for di_number in di_numbers_in_cell:
+                        if di_number in all_di_numbers:
+                            if di_number not in di_number_to_wb:
+                                subset_file_path = di_number_to_file_path[di_number]
+                                wb_subset = load_workbook(filename=subset_file_path)
+                                if 'RTVM' in wb_subset.sheetnames:
+                                    ws_subset = wb_subset['RTVM']
+                                else:
+                                    ws_subset = wb_subset.active
+                                di_number_to_wb[di_number] = wb_subset
+                                di_number_to_ws[di_number] = ws_subset
+                                di_number_to_next_row[di_number] = 2
+                            else:
+                                wb_subset = di_number_to_wb[di_number]
+                                ws_subset = di_number_to_ws[di_number]
+
+                            next_row = di_number_to_next_row[di_number]
+
+                            for cell in row:
+                                new_cell = ws_subset.cell(row=next_row, column=cell.column, value=cell.value)
+                                if cell.has_style:
+                                    new_cell.font = copy(cell.font)
+                                    new_cell.border = copy(cell.border)
+                                    new_cell.fill = copy(cell.fill)
+                                    new_cell.number_format = copy(cell.number_format)
+                                    new_cell.protection = copy(cell.protection)
+                                    new_cell.alignment = copy(cell.alignment)
+                                if cell.hyperlink:
+                                    new_cell.hyperlink = copy(cell.hyperlink)
+                                if cell.comment:
+                                    new_cell.comment = copy(cell.comment)
+
+                            di_number_to_next_row[di_number] += 1
+
+            for di_number, wb_subset in di_number_to_wb.items():
+                subset_file_path = di_number_to_file_path[di_number]
+                try:
+                    wb_subset.save(subset_file_path)
+                    wb_subset.close()
+                except Exception as e:
+                    progress_queue.put(('error', f"Failed to save subset file for DI Number {di_number}:\n{e}"))
+
+            progress_queue.put(('done', None))
+
+        progress_queue = queue.Queue()
+        threading.Thread(target=process_data, args=(progress_queue,)).start()
+
+        progress_window = tk.Toplevel()
+        progress_window.title("Processing Rows")
+        progress_label = tk.Label(progress_window, text="Processing rows...")
+        progress_label.pack()
+        progress_bar = ttk.Progressbar(progress_window, orient='horizontal', length=300, mode='determinate')
+        progress_bar.pack()
+        progress_info = tk.Label(progress_window, text="0%")
+        progress_info.pack()
+
+        total_rows = 0
+        current_row = 0
+
+        def update_progress():
+            nonlocal total_rows, current_row
+            try:
+                while True:
+                    message_type, data = progress_queue.get_nowait()
+                    if message_type == 'total':
+                        total_rows = data
+                        progress_bar['maximum'] = total_rows
+                    elif message_type == 'progress':
+                        current_row = data
+                        if total_rows > 0:
+                            percent = int((current_row / total_rows) * 100)
+                            progress_bar['value'] = current_row
+                            progress_info.config(text=f"{percent}%")
+                    elif message_type == 'error':
+                        messagebox.showerror("Error", data)
+                        progress_window.destroy()
+                        return
+                    elif message_type == 'done':
+                        progress_bar['value'] = progress_bar['maximum']
+                        progress_info.config(text="100%")
+                        progress_window.destroy()
+                        messagebox.showinfo("Subsets Created", f"The subsets have been created in {pmr_folder}")
+                        return
+            except queue.Empty:
+                pass
+            except Exception as e:
+                print(f"Error in update_progress: {e}")
+            progress_window.after(100, update_progress)
+
+        update_progress()
+
+
+
+    def recombine_subsets(self):
+        import os
+        import time
+        from openpyxl import load_workbook
+        from copy import copy
+        from tkinter import ttk, messagebox, filedialog, simpledialog
+        import tkinter as tk
+        import threading
+        import queue
+
+        # Since you've already uploaded the main Excel file and stored it in self.excel_file_path,
+        # we assume self.excel_file_path is valid and no need to check again.
+        # If you still want to ensure it's loaded, you can handle it gracefully:
+        if not self.excel_file_path:
+            messagebox.showerror("Error", "No main Excel file is loaded. Please upload a main file first.")
+            return
+
+        # Prompt the user to select the template file if not already selected
+        if not hasattr(self, 'template_file_path') or not self.template_file_path:
+            template_file_path = filedialog.askopenfilename(
+                title="Select the Template Excel File",
+                filetypes=[("Excel files", "*.xls;*.xlsx")]
+            )
+            if not template_file_path:
+                messagebox.showwarning("No Template File", "No template Excel file was selected.")
+                return
+            self.template_file_path = template_file_path
+        else:
+            template_file_path = self.template_file_path
+
+        # Prompt the user to select the folder containing the subset files
+        subset_folder = filedialog.askdirectory(title="Select the PMR Folder Containing Subset Files")
+        if not subset_folder:
+            messagebox.showwarning("No Folder Selected", "No folder was selected.")
+            return
+
+        # Prompt the user to select the output file path for the recombined Excel file
+        output_file_path = filedialog.asksaveasfilename(
+            title="Save Recombined Excel File As",
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")]
+        )
+        if not output_file_path:
+            messagebox.showwarning("No Output File", "No output file was specified.")
+            return
+
+        def process_data(progress_queue):
+            try:
+                print("Starting recombination process...")
+
+                # Load the main Excel file to get the structure and headers
+                wb_main = load_workbook(filename=self.excel_file_path)
+                if 'RTVM' in wb_main.sheetnames:
+                    ws_main = wb_main['RTVM']
+                else:
+                    ws_main = wb_main.active
+                print("Main workbook loaded.")
+
+                # Load the template workbook to use as the recombined workbook
+                wb_recombined = load_workbook(filename=template_file_path)
+                if 'RTVM' in wb_recombined.sheetnames:
+                    ws_recombined = wb_recombined['RTVM']
+                else:
+                    ws_recombined = wb_recombined.active
+                print("Template workbook loaded as recombined workbook.")
+
+                # Clear existing data in the recombined worksheet except the header
+                ws_recombined.delete_rows(2, ws_recombined.max_row)
+                print("Cleared existing data in the recombined worksheet.")
+
+                # Read all subset files and collect data
+                data_dict = {}  # Key: DOORS SPEC ID, Value: Row data (as a dict)
+                columns_to_combine = [7, 8]  # Columns G and H (1-based indexing)
+
+                print("Collecting subset files...")
+                subset_files = []
+                for root, dirs, files in os.walk(subset_folder):
+                    if 'Status Photos' in dirs:
+                        dirs.remove('Status Photos')
+                    for file in files:
+                        if file.endswith('.xlsx') or file.endswith('.xls'):
+                            file_path = os.path.join(root, file)
+                            subset_files.append(file_path)
+                print(f"Total subset files found: {len(subset_files)}")
+
+                total_files = len(subset_files)
+                progress_queue.put(('total', total_files))
+
+                current_file = 0
+
+                for subset_file in subset_files:
+                    current_file += 1
+                    progress_queue.put(('progress', current_file))
+                    print(f"Processing file {current_file}/{total_files}: {subset_file}")
+
+                    wb_subset = load_workbook(filename=subset_file)
+                    if 'RTVM' in wb_subset.sheetnames:
+                        ws_subset = wb_subset['RTVM']
+                    else:
+                        ws_subset = wb_subset.active
+                    print(f"Opened subset workbook: {subset_file}")
+
+                    for row in ws_subset.iter_rows(min_row=2, values_only=False):
+                        doors_spec_id_cell = row[0]
+                        doors_spec_id = doors_spec_id_cell.value
+                        if not doors_spec_id:
+                            continue
+
+                        row_values = {}
+                        for cell in row:
+                            col_idx = cell.column
+                            row_values[col_idx] = cell.value
+
+                        if doors_spec_id not in data_dict:
+                            data_dict[doors_spec_id] = row_values
+                        else:
+                            # Combine columns G and H
+                            for col_idx in columns_to_combine:
+                                existing_value = data_dict[doors_spec_id].get(col_idx, '')
+                                new_value = row_values.get(col_idx, '')
+                                if existing_value and new_value and new_value not in existing_value:
+                                    combined_value = f"{existing_value}\n{new_value}"
+                                    data_dict[doors_spec_id][col_idx] = combined_value
+                                elif not existing_value and new_value:
+                                    data_dict[doors_spec_id][col_idx] = new_value
+
+                    wb_subset.close()
+                    print(f"Finished processing file: {subset_file}")
+
+                print("All subset files processed.")
+
+                print("Preparing to write data to recombined workbook...")
+                progress_queue.put(('writing_start', None))
+
+                doors_spec_id_order = []
+                for row in ws_main.iter_rows(min_row=2, values_only=False):
+                    doors_spec_id = row[0].value
+                    if doors_spec_id:
+                        doors_spec_id_order.append(doors_spec_id)
+
+                total_rows = len(doors_spec_id_order)
+                progress_queue.put(('writing_total', total_rows))
+                print(f"Total rows to write: {total_rows}")
+
+                next_row = 2
+
+                for idx, doors_spec_id in enumerate(doors_spec_id_order, start=1):
+                    progress_queue.put(('writing_progress', idx))
+                    if idx % 100 == 0 or idx == total_rows:
+                        print(f"Writing row {idx}/{total_rows}")
+                    if doors_spec_id in data_dict:
+                        row_values = data_dict[doors_spec_id]
+                        for cell in ws_main[next_row]:
+                            col_idx = cell.column
+                            value = row_values.get(col_idx, cell.value)
+                            new_cell = ws_recombined.cell(row=next_row, column=col_idx, value=value)
+                            if cell.has_style:
+                                new_cell.font = copy(cell.font)
+                                new_cell.border = copy(cell.border)
+                                new_cell.fill = copy(cell.fill)
+                                new_cell.number_format = copy(cell.number_format)
+                                new_cell.protection = copy(cell.protection)
+                                new_cell.alignment = copy(cell.alignment)
+                            if cell.hyperlink:
+                                new_cell.hyperlink = copy(cell.hyperlink)
+                            if cell.comment:
+                                new_cell.comment = copy(cell.comment)
+                    else:
+                        for cell in ws_main[next_row]:
+                            new_cell = ws_recombined.cell(row=next_row, column=cell.column, value=cell.value)
+                            if cell.has_style:
+                                new_cell.font = copy(cell.font)
+                                new_cell.border = copy(cell.border)
+                                new_cell.fill = copy(cell.fill)
+                                new_cell.number_format = copy(cell.number_format)
+                                new_cell.protection = copy(cell.protection)
+                                new_cell.alignment = copy(cell.alignment)
+                            if cell.hyperlink:
+                                new_cell.hyperlink = copy(cell.hyperlink)
+                            if cell.comment:
+                                new_cell.comment = copy(cell.comment)
+                    next_row += 1
+
+                print("Data written to recombined workbook.")
+
+                wb_recombined.save(output_file_path)
+                wb_recombined.close()
+                print(f"Recombined workbook saved at: {output_file_path}")
+
+                progress_queue.put(('done', None))
+                print("Recombination process completed.")
+
+            except Exception as e:
+                progress_queue.put(('error', f"An error occurred during recombination:\n{e}"))
+                print(f"An error occurred during recombination: {e}")
+
+        progress_queue = queue.Queue()
+        threading.Thread(target=process_data, args=(progress_queue,)).start()
+
+        progress_window = tk.Toplevel()
+        progress_window.title("Recombining Subsets")
+        progress_label = tk.Label(progress_window, text="Processing subset files...")
+        progress_label.pack()
+        progress_bar = ttk.Progressbar(progress_window, orient='horizontal', length=300, mode='determinate')
+        progress_bar.pack()
+        progress_info = tk.Label(progress_window, text="0%")
+        progress_info.pack()
+
+        total_files = 0
+        current_file = 0
+        total_rows = 0
+        current_row = 0
+        write_start_time = None
+
+        def update_progress():
+            nonlocal total_files, current_file, total_rows, current_row, write_start_time
+            try:
+                while True:
+                    message_type, data = progress_queue.get_nowait()
+                    if message_type == 'total':
+                        total_files = data
+                        progress_bar['maximum'] = total_files
+                        progress_label.config(text="Processing subset files...")
+                    elif message_type == 'progress':
+                        current_file = data
+                        if total_files > 0:
+                            percent = int((current_file / total_files) * 100)
+                            progress_bar['value'] = current_file
+                            progress_info.config(text=f"{percent}%")
+                    elif message_type == 'writing_start':
+                        current_row = 0
+                        total_rows = 0
+                        progress_bar['value'] = 0
+                        progress_bar['maximum'] = 1
+                        progress_label.config(text="Writing data to recombined workbook...")
+                        progress_info.config(text="0%")
+                        write_start_time = time.time()
+                    elif message_type == 'writing_total':
+                        total_rows = data
+                        progress_bar['maximum'] = total_rows
+                    elif message_type == 'writing_progress':
+                        current_row = data
+                        if total_rows > 0:
+                            percent = int((current_row / total_rows) * 100)
+                            progress_bar['value'] = current_row
+                            elapsed_time = time.time() - write_start_time
+                            rows_per_sec = current_row / elapsed_time if elapsed_time > 0 else 0
+                            remaining_rows = total_rows - current_row
+                            est_remaining_time = remaining_rows / rows_per_sec if rows_per_sec > 0 else 0
+                            mins, secs = divmod(int(est_remaining_time), 60)
+                            hours, mins = divmod(mins, 60)
+                            est_time_str = f"Est. time remaining: {hours:d}h {mins:02d}m {secs:02d}s"
+                            progress_info.config(text=f"{percent}% - {est_time_str}")
+                    elif message_type == 'error':
+                        messagebox.showerror("Error", data)
+                        progress_window.destroy()
+                        return
+                    elif message_type == 'done':
+                        progress_bar['value'] = progress_bar['maximum']
+                        progress_info.config(text="100%")
+                        progress_window.destroy()
+                        messagebox.showinfo(
+                            "Recombination Complete",
+                            f"The subset files have been recombined into {output_file_path}"
+                        )
+                        return
+            except queue.Empty:
+                pass
+            except Exception as e:
+                print(f"Error in update_progress: {e}")
+            progress_window.after(100, update_progress)
+
+        update_progress()
+
+
+
+
+
+    def merge_single_subset(self):
+        from openpyxl import load_workbook
+        from copy import copy
+        import tkinter as tk
+        from tkinter import filedialog, messagebox
+        import threading
+        import queue
+
+        # Prompt the user to select the subset file to merge
+        subset_file_path = filedialog.askopenfilename(
+            title="Select the Subset Excel File to Merge",
+            filetypes=[("Excel files", "*.xlsx;*.xls")]
+        )
+        if not subset_file_path:
+            messagebox.showwarning("No Subset File", "No subset Excel file was selected.")
+            return
+
+        # Prompt the user to select the main file to merge into
+        main_file_path = filedialog.askopenfilename(
+            title="Select the Main Excel File to Merge Into",
+            filetypes=[("Excel files", "*.xlsx;*.xls")]
+        )
+        if not main_file_path:
+            messagebox.showwarning("No Main File", "No main Excel file was selected.")
+            return
+
+        # Prompt the user to select the output file path for the merged Excel file
+        output_file_path = filedialog.asksaveasfilename(
+            title="Save Merged Excel File As",
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")]
+        )
+        if not output_file_path:
+            messagebox.showwarning("No Output File", "No output file was specified.")
+            return
+
+        # Function to perform the merge in a background thread
+        def process_data(progress_queue):
+            try:
+                # Load the main Excel file
+                wb_main = load_workbook(filename=main_file_path)
+                if 'RTVM' in wb_main.sheetnames:
+                    ws_main = wb_main['RTVM']
+                else:
+                    ws_main = wb_main.active  # Use the first sheet
+                print("Main workbook loaded.")
+
+                # Load the subset Excel file
+                wb_subset = load_workbook(filename=subset_file_path)
+                if 'RTVM' in wb_subset.sheetnames:
+                    ws_subset = wb_subset['RTVM']
+                else:
+                    ws_subset = wb_subset.active  # Use the first sheet
+                print("Subset workbook loaded.")
+
+                # Build a mapping from DOORS SPEC ID to row in main workbook
+                doors_spec_id_to_row_main = {}
+                for row in ws_main.iter_rows(min_row=2, values_only=False):
+                    doors_spec_id = row[0].value  # Column A
+                    if doors_spec_id:
+                        doors_spec_id_to_row_main[doors_spec_id] = row
+
+                # For progress tracking
+                total_rows = ws_subset.max_row - 1  # Exclude header
+                progress_queue.put(('total', total_rows))
+                current_row_num = 0
+
+                # Iterate over the subset rows
+                for row_subset in ws_subset.iter_rows(min_row=2, values_only=False):
+                    current_row_num += 1
+                    progress_queue.put(('progress', current_row_num))
+
+                    doors_spec_id = row_subset[0].value  # Column A
+                    if not doors_spec_id:
+                        continue  # Skip rows without DOORS SPEC ID
+
+                    if doors_spec_id in doors_spec_id_to_row_main:
+                        # Merge data into the main workbook
+                        row_main = doors_spec_id_to_row_main[doors_spec_id]
+
+                        # For columns G and H (columns 7 and 8), combine the data
+                        for col_idx in [7, 8]:  # Columns G and H
+                            cell_main = row_main[col_idx - 1]  # 0-based index
+                            cell_subset = row_subset[col_idx - 1]
+
+                            value_main = cell_main.value or ''
+                            value_subset = cell_subset.value or ''
+                            if value_subset and value_subset not in value_main:
+                                if value_main:
+                                    combined_value = f"{value_main}\n{value_subset}"
+                                else:
+                                    combined_value = value_subset
+                                cell_main.value = combined_value
+                    else:
+                        # DOORS SPEC ID not found in main workbook
+                        # You may choose to add the new row or skip it
+                        pass
+
+                # Save the merged workbook
+                wb_main.save(output_file_path)
+                wb_main.close()
+                wb_subset.close()
+                print("Merged workbook saved.")
+
+                # Signal completion
+                progress_queue.put(('done', None))
+
+            except Exception as e:
+                progress_queue.put(('error', f"An error occurred during merging:\n{e}"))
+                print(f"An error occurred during merging: {e}")
+
+        # Create a queue to communicate with the background thread
+        progress_queue = queue.Queue()
+
+        # Start the background thread
+        threading.Thread(target=process_data, args=(progress_queue,)).start()
+
+        # Create a progress bar
+        progress_window = tk.Toplevel()
+        progress_window.title("Merging Subset")
+        progress_label = tk.Label(progress_window, text="Merging subset file...")
+        progress_label.pack()
+        progress_bar = ttk.Progressbar(progress_window, orient='horizontal', length=300, mode='determinate')
+        progress_bar.pack()
+        progress_info = tk.Label(progress_window, text="0%")
+        progress_info.pack()
+
+        # Variables to keep track of progress
+        total_rows = 0
+        current_row = 0
+
+        # Function to update the progress bar
+        def update_progress():
+            nonlocal total_rows, current_row
+            try:
+                while True:
+                    message_type, data = progress_queue.get_nowait()
+                    if message_type == 'total':
+                        total_rows = data
+                        progress_bar['maximum'] = total_rows
+                    elif message_type == 'progress':
+                        current_row = data
+                        if total_rows > 0:
+                            percent = int((current_row / total_rows) * 100)
+                            progress_bar['value'] = current_row
+                            progress_info.config(text=f"{percent}%")
+                    elif message_type == 'error':
+                        messagebox.showerror("Error", data)
+                        progress_window.destroy()
+                        return
+                    elif message_type == 'done':
+                        progress_bar['value'] = total_rows
+                        progress_info.config(text="100%")
+                        progress_window.destroy()
+                        messagebox.showinfo(
+                            "Merge Complete",
+                            f"The subset file has been merged into {output_file_path}"
+                        )
+                        return
+            except queue.Empty:
+                pass
+            except Exception as e:
+                print(f"Error in update_progress: {e}")
+            # Schedule the next check
+            progress_window.after(100, update_progress)
+
+        # Start updating the progress bar
+        update_progress()
+
+
+### End of RTVM Subset tool pack ################################################################################################################################################################################################################################           
+
+
+
+
+    def open_management_window(self):
+        # Create a new window
+        self.management_window = tk.Toplevel(self.root)
+        self.management_window.title("Management")
+
+        # Set window size (optional)
+        self.management_window.geometry("800x600")  # Adjust as needed
+
+        # Create a frame for the buttons
+        button_frame = tk.Frame(self.management_window)
+        button_frame.pack(side=tk.TOP, fill=tk.X)
+
+        # Export to Excel Button
+        export_button = tk.Button(button_frame, text="Export to Excel", command=self.export_management_table)
+        export_button.pack(side=tk.LEFT, padx=5, pady=5)
+
+        # Create the management table
+        columns = ("CDRL NUMBER (DI Number)", "Accepted", "Depreciated", "Proposed Add", "Proposed Delete", "Awaiting Input")
+        self.management_table = ttk.Treeview(self.management_window, columns=columns, show="headings")
+        self.management_table.pack(fill=tk.BOTH, expand=True)
+
+        # Configure headings with sorting
+        for col in columns:
+            self.management_table.heading(col, text=col, command=lambda c=col: self.sort_management_table(c))
+            self.management_table.column(col, anchor='center', width=130)  # Adjust width as needed
+
+        # Populate the management table
+        self.populate_management_table()
+
+
+    def populate_management_table(self):
+        # Clear existing data in the management table
+        for item in self.management_table.get_children():
+            self.management_table.delete(item)
+
+        # Initialize a dictionary to hold aggregated data
+        aggregated_data = {}
+
+        # Loop through the status data
+        for item in self.status_data:
+            di_number = item.get('di_number', 'Unknown')
+            object_status = item.get('object_status', '').lower()
+            contractor_status = item.get('contractor_status', '').lower()
+            government_status = item.get('government_status', '').lower()
+
+            # Initialize the DI Number entry if not present
+            if di_number not in aggregated_data:
+                aggregated_data[di_number] = {
+                    'Accepted': 0,
+                    'Depreciated': 0,
+                    'Proposed Add': 0,
+                    'Proposed Delete': 0,
+                    'Awaiting Input': 0
+                }
+
+            # Update counts based on statuses
+            if object_status == 'accepted':
+                aggregated_data[di_number]['Accepted'] += 1
+            elif object_status == 'depreciated':
+                aggregated_data[di_number]['Depreciated'] += 1
+
+            # Update counts for 'Proposed Add' and 'Proposed Delete' based on contractor_status
+            if object_status == 'proposed add':
+                aggregated_data[di_number]['Proposed Add'] += 1
+            elif object_status == 'proposed remove' or object_status == 'proposed delete':
+                aggregated_data[di_number]['Proposed Delete'] += 1
+
+            # Update count for 'Awaiting Input' based on government_status
+            if government_status == 'awaiting input':
+                aggregated_data[di_number]['Awaiting Input'] += 1
+
+        # Populate the management table with aggregated data
+        for di_number, counts in aggregated_data.items():
+            self.management_table.insert(
+                "", "end",
+                values=(
+                    di_number,
+                    counts['Accepted'],
+                    counts['Depreciated'],
+                    counts['Proposed Add'],
+                    counts['Proposed Delete'],
+                    counts['Awaiting Input']
+                )
+            )
+
+
+
+
+
+
+    def export_management_table(self):
+        # Prompt the user to select a file location
+        file_path = filedialog.asksaveasfilename(defaultextension=".xlsx",
+                                                 filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+                                                 title="Save Management Table as Excel File")
+        if file_path:
+            try:
+                # Create a DataFrame from the management table
+                columns = ["CDRL NUMBER (DI Number)", "Accepted", "Depreciated", "Proposed Add", "Proposed Delete", "Awaiting Input"]
+                data = []
+                for item in self.management_table.get_children():
+                    values = self.management_table.item(item)['values']
+                    data.append(values)
+                df = pd.DataFrame(data, columns=columns)
+
+                # Save the DataFrame to an Excel file
+                df.to_excel(file_path, index=False)
+
+                messagebox.showinfo("Success", f"Management table exported to {file_path}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to export to Excel: {e}")
+
+    def sort_management_table(self, sort_column):
+        # Determine the sort order
+        if hasattr(self, 'sort_column') and self.sort_column == sort_column:
+            # Toggle sort order
+            self.sort_descending = not self.sort_descending
+        else:
+            # New sort column, default to ascending
+            self.sort_descending = False
+        self.sort_column = sort_column
+
+        # Extract data from the table
+        data = []
+        for item in self.management_table.get_children():
+            values = self.management_table.item(item)['values']
+            data.append(values)
+
+        # Get the index of the sort column
+        columns = ["CDRL NUMBER (DI Number)", "Accepted", "Depreciated", "Proposed Add", "Proposed Delete", "Awaiting Input"]
+        sort_col_index = columns.index(sort_column)
+
+        # Convert the data to appropriate types for sorting
+        for row in data:
+            # Attempt to convert numerical values (except for the DI Number)
+            for i in range(1, len(row)):
+                try:
+                    row[i] = int(row[i])
+                except ValueError:
+                    row[i] = 0  # Default to 0 if conversion fails
+
+        # Sort the data
+        data.sort(key=lambda x: x[sort_col_index], reverse=self.sort_descending)
+
+        # Clear the table
+        for item in self.management_table.get_children():
+            self.management_table.delete(item)
+
+        # Insert sorted data back into the table
+        for row in data:
+            self.management_table.insert("", "end", values=row)
+
+    def on_progress_bar_click(self, event):
+        # Identify the row under the cursor
+        item_id = self.progress_table.identify_row(event.y)
+        if item_id:
+            # Get the row number from the item
+            row_value = self.progress_table.item(item_id, 'values')[0]
+            # Remove '>' if present
+            row_value = row_value.lstrip('>')
+            try:
+                selected_row_number = int(row_value)
+                # Adjust for zero-based index and header row
+                new_row_index = selected_row_number - 2  # Assuming header is on Excel row 1
+                max_row_index = len(self.df) - 1
+                if 0 <= new_row_index <= max_row_index:
+                    # Save any unsaved data before changing row
+                    self.save_comments_to_excel()
+                    # Update current row
+                    self.current_row = new_row_index
+                    # Update the UI
+                    self.update_ui_after_navigation()
+                    # Update row indicator
+                    self.row_indicator_var.set(f"Row: {self.current_row + 2}")
+                else:
+                    messagebox.showerror(
+                        "Invalid Row", "Selected row number is out of range.")
+            except ValueError:
+                pass  # If conversion to int fails, do nothing
+
+    def toggle_progress_bar(self):
+        if self.show_progress_var.get() == 1:
+            # Show the progress bar table and label
+            self.progress_label.grid()
+            self.progress_table.grid()
+            # Adjust column weights
+            self.root.grid_columnconfigure(0, weight=1)
+        else:
+            # Hide the progress bar table and label
+            self.progress_label.grid_remove()
+            self.progress_table.grid_remove()
+            # Adjust column weights
+            self.root.grid_columnconfigure(0, weight=0)
+
+    def populate_progress_table(self):
+        if self.df is None:
+            return
+        try:
+            # Clear existing items
+            self.progress_table.delete(*self.progress_table.get_children())
+            total_rows = len(self.df)
+            for i in range(2, total_rows + 2):  # Rows are numbered starting from 2
+                self.progress_table.insert("", "end", values=(str(i),))
+        except Exception as e:
+            print(f"Error populating progress table: {e}")
+
+            
+    def update_progress_bar_highlight(self):
+        # First, remove existing highlights
+        for item in self.progress_table.get_children():
+            # Remove all custom tags
+            self.progress_table.item(item, tags=())
+            # Get the row number
+            row_value = self.progress_table.item(item, 'values')[0]
+            # Remove '>' if present
+            if row_value.startswith('>'):
+                row_value = row_value[1:]
+                self.progress_table.item(item, values=(row_value,))
+        # Now, highlight the current row and filtered rows
+        current_row_number = self.current_row + 2  # Adjust for header
+        for item in self.progress_table.get_children():
+            row_value = self.progress_table.item(item, 'values')[0]
+            df_row_index = int(row_value) - 2  # Adjust for DataFrame index
+            tags = []
+            # Check if this is the current row
+            if int(row_value.lstrip('>')) == current_row_number:
+                # Add '>' and 'current_row' tag
+                self.progress_table.item(item, values=('>' + row_value.lstrip('>'),))
+                tags.append('current_row')
+            # Check if filters are applied and this row is in filtered rows
+            elif hasattr(self, 'filtered_row_indices') and self.filtered_row_indices and df_row_index in self.filtered_row_indices:
+                tags.append('filtered_row')
+            # Set the tags
+            self.progress_table.item(item, tags=tuple(tags))
+        # Configure the highlight styles
+        self.progress_table.tag_configure('current_row', background='lightblue')
+        self.progress_table.tag_configure('filtered_row', background='yellow')
+
 
     def toggle_history_tables(self):
         if self.show_history_var.get() == 1:
@@ -525,6 +2423,10 @@ class RTVMApp:
                 # Process the DataFrame to extract statuses
                 self.process_statuses()
 
+                # **Add this line to populate the progress bar table**
+                self.populate_progress_table()
+
+                # Update the UI
                 self.update_ui_after_navigation()
                 self.row_indicator_var.set(f"Row: {self.current_row + 2}")
                 messagebox.showinfo(
@@ -532,6 +2434,7 @@ class RTVMApp:
             except Exception as e:
                 messagebox.showerror(
                     "Error", f"Failed to load Excel file: {e}")
+
 
     def process_statuses(self):
         self.status_data = []  # List to store status info for each status entry
@@ -541,44 +2444,55 @@ class RTVMApp:
         try:
             # Loop through the DataFrame
             for index, row in self.df.iterrows():
-                data = row[5]  # Column F
-                if pd.isna(data):
-                    data = ""
-                elif not isinstance(data, str):
-                    data = str(data)
-                # Use regex to extract statuses and VeriDoc Number
-                matches = re.finditer(
-                    r'Object Identifier:\s*(?P<obj_id>WCC-VERI-DOC-\d+).*?Object Status:\s*(?P<object_status>.*?)\n.*?Contractor Assessed Status:\s*(?P<contractor_status>.*?)\n.*?Government Assessed Status:\s*(?P<government_status>.*?)\n',
-                    data, re.DOTALL
-                )
-                found_match = False
-                for match in matches:
-                    found_match = True
-                    obj_id = match.group('obj_id').strip()
-                    object_status = match.group('object_status').strip()
-                    contractor_status = match.group('contractor_status').strip()
-                    government_status = match.group('government_status').strip()
+                data_cell = row[5]  # Adjust if the data is not in column F
+                if pd.isna(data_cell):
+                    continue
+                elif not isinstance(data_cell, str):
+                    data_cell = str(data_cell)
+                # Split entries separated by lines of underscores
+                entries = data_cell.split('______________________')
+                for entry in entries:
+                    entry = entry.strip()
+                    if not entry:
+                        continue
+                    # Initialize variables
+                    data = {
+                        'Object Identifier': "",
+                        'DI Number': "",
+                        'Object Status': "",
+                        'Contractor Assessed Status': "",
+                        'Government Assessed Status': ""
+                    }
+                    # Split entry into lines
+                    lines = entry.split('\n')
+                    for line in lines:
+                        line = line.strip()
+                        if ':' in line:
+                            key, value = line.split(':', 1)
+                            key = key.strip()
+                            value = value.strip()
+                            if key in data:
+                                data[key] = value
+                    # Add to status_data
+                    obj_id = data['Object Identifier']
+                    di_number = data['DI Number']
+                    object_status = data['Object Status']
+                    contractor_status = data['Contractor Assessed Status']
+                    government_status = data['Government Assessed Status']
                     self.unique_object_statuses.add(object_status)
                     self.unique_contractor_statuses.add(contractor_status)
                     self.unique_government_statuses.add(government_status)
                     self.status_data.append({
                         'row_index': index,
                         'veridoc_number': obj_id,
+                        'di_number': di_number,
                         'object_status': object_status,
                         'contractor_status': contractor_status,
                         'government_status': government_status
                     })
-                # If no matches found, add an entry with empty statuses
-                if not found_match:
-                    self.status_data.append({
-                        'row_index': index,
-                        'veridoc_number': '',
-                        'object_status': '',
-                        'contractor_status': '',
-                        'government_status': ''
-                    })
         except Exception as e:
             messagebox.showerror("Error", f"Failed to process statuses: {e}")
+
 
 
     def open_filter_dialog(self):
@@ -688,7 +2602,8 @@ class RTVMApp:
                 "No Results", "No rows match the selected filters.")
         # Close the filter window
         self.filter_window.destroy()
-
+        # Update the progress bar highlight
+        self.update_progress_bar_highlight()
     def clear_filters(self):
         if hasattr(self, 'filtered_row_indices'):
             del self.filtered_row_indices
@@ -696,6 +2611,8 @@ class RTVMApp:
         self.update_ui_after_navigation()
         self.row_indicator_var.set(f"Row: {self.current_row + 2}")
         messagebox.showinfo("Filter Cleared", "Filters have been cleared.")
+        # Update the progress bar highlight
+        self.update_progress_bar_highlight()
 
     def navigate_cells(self, direction):
         if self.df is None:
@@ -911,13 +2828,26 @@ class RTVMApp:
         # Identify the row under the cursor
         row_id = self.table.identify_row(event.y)
         if row_id:
-            # Create a context menu
-            menu = tk.Menu(self.root, tearoff=0)
-            menu.add_command(
-                label="Set DI Number to match CDRL", command=lambda: self.set_di_number(row_id))
-            menu.add_command(
-                label="Delete DI Number", command=lambda: self.delete_di_number(row_id))
-            menu.post(event.x_root, event.y_root)
+            # Get values from the selected row
+            item = self.table.item(row_id)
+            values = item['values']
+            if values:
+                object_status = values[3]  # Object Status is at index 3
+                if object_status.lower() == "depreciated":
+                    # Show message and do not display context menu
+                    messagebox.showinfo("Information", "This item is locked as it is depreciated. You do not need to do anything with this")
+                else:
+                    # Create a context menu
+                    menu = tk.Menu(self.root, tearoff=0)
+                    menu.add_command(
+                        label="Set DI Number to match CDRL", command=lambda: self.set_di_number(row_id))
+                    menu.add_command(
+                        label="Delete DI Number", command=lambda: self.delete_di_number(row_id))
+                    menu.post(event.x_root, event.y_root)
+            else:
+                # If no values are present, you might want to handle this case
+                messagebox.showerror("Error", "No data available for the selected row.")
+
 
     def set_di_number(self, row_id):
         # Get values from the selected row
@@ -955,20 +2885,53 @@ class RTVMApp:
             # Create deletion pattern
             del_pattern = f"DEL; {obj_id}"
 
-            if self.pattern_dialog and self.pattern_dialog.winfo_exists():
-                # Add to existing PatternDialog
-                self.pattern_dialog.deletions.append(del_pattern)
-                self.pattern_dialog.generate_pattern()
-            else:
-                # Open a new PatternDialog
-                pattern_dialog = PatternDialog(
-                    self.root, self, obj_id, "", self.current_row)
-                pattern_dialog.deletions = [del_pattern]
-                pattern_dialog.generate_pattern()
-                self.pattern_dialog = pattern_dialog
+            # Save the deletion pattern to Excel
+            self.save_deletion_to_excel(del_pattern)
+
+            # Update the Proposed Changes Table
+            self.update_proposed_changes_table()
+
+            messagebox.showinfo("Success", "DI Number deleted and changes saved to Excel file successfully.")
         else:
-            messagebox.showerror(
-                "Error", "No data available for the selected row.")
+            messagebox.showerror("Error", "No data available for the selected row.")
+
+
+    def save_deletion_to_excel(self, del_pattern):
+        # Get existing content from cell G (column index 6) of the current row
+        existing_content = self.df.iloc[self.current_row, 6]
+        if pd.isna(existing_content):
+            existing_content = ""
+        elif not isinstance(existing_content, str):
+            existing_content = str(existing_content)
+
+        # Append the new deletion pattern to the existing content
+        if existing_content.strip():
+            new_content = existing_content.strip() + "\n" + del_pattern
+        else:
+            new_content = del_pattern
+
+        # Update the Excel file directly using openpyxl
+        from openpyxl import load_workbook
+
+        try:
+            # Load the workbook
+            wb = load_workbook(self.excel_file_path)
+            ws = wb.active  # You may need to select the correct sheet if there are multiple
+
+            # Calculate the Excel row number (considering headers)
+            excel_row = self.current_row + 2  # Assuming header is on the first row
+
+            # Update the cell in column G (which is column index 7 in openpyxl)
+            ws.cell(row=excel_row, column=7, value=new_content)
+
+            # Save the workbook
+            wb.save(self.excel_file_path)
+
+            # Update the DataFrame in memory
+            self.df.iloc[self.current_row, 6] = new_content
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save deletion to Excel file: {e}")
 
     def on_table_row_select(self, event):
         # Clear previous highlights
@@ -1213,6 +3176,8 @@ class RTVMApp:
                 self.update_proposed_changes_table()
                 # **Update the Comment History Table**
                 self.update_comment_history_table()
+                # Update the progress bar highlight
+                self.update_progress_bar_highlight()
             else:
                 messagebox.showerror(
                     "Error", "No data available at this row.")
@@ -1465,7 +3430,7 @@ class RTVMApp:
             self.total_counts[key] = counter
 
     def save_comments_to_excel(self):
-        # Prepare the content for column H
+        # Prepare the content for the 'Contractor Proposed Change Comment Input' column
         comment_lines = []
         for obj_id, comment_text in self.current_comments.items():
             comment_line = f"{obj_id} - {comment_text}"
@@ -1481,16 +3446,27 @@ class RTVMApp:
             ws = wb.active  # Or specify the sheet if needed
 
             # Calculate the Excel row number (considering headers)
-            excel_row = self.current_row + 2  # Assuming header is on the first row
+            excel_row = self.current_row + 2  # Adjust if your header is on a different row
 
-            # Update the cell in column H (which is column index 8 in openpyxl)
-            ws.cell(row=excel_row, column=8, value=comments_content)
+            # Find the column index for 'Contractor Proposed Change Comment Input'
+            column_letter = None
+            for col in ws.iter_cols(1, ws.max_column):
+                if col[0].value == 'Contractor Proposed Change Comment Input':
+                    column_letter = col[0].column_letter
+                    break
+
+            if column_letter is None:
+                messagebox.showerror("Error", "Column 'Contractor Proposed Change Comment Input' not found in Excel file.")
+                return
+
+            # Update the cell in the correct column
+            ws[f"{column_letter}{excel_row}"] = comments_content
 
             # Save the workbook
             wb.save(self.excel_file_path)
 
             # Update the DataFrame in memory
-            self.df.iloc[self.current_row, self.df.columns.get_loc('Comments Column Name')] = comments_content
+            self.df.at[self.current_row, 'Contractor Proposed Change Comment Input'] = comments_content
 
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save comments to Excel file: {e}")
@@ -1566,6 +3542,33 @@ class RTVMApp:
                                 command=lambda: self.save_comment(row_id, text_box.get("1.0", tk.END), comment_window))
         save_button.pack(pady=10)
 
+    def check_spelling(self, text_widget, spell):
+        # Get the content of the text widget
+        content = text_widget.get("1.0", tk.END)
+
+        # Split the content into words with positions
+        words = content.split()
+        index = "1.0"
+
+        # Clear previous tags
+        text_widget.tag_remove("misspelled", "1.0", tk.END)
+
+        for word in words:
+            # Clean the word by removing punctuation
+            clean_word = ''.join(char for char in word if char.isalpha())
+
+            # Get the start and end index of the word
+            start_index = text_widget.search(word, index, stopindex=tk.END)
+            if not start_index:
+                continue
+            end_index = f"{start_index}+{len(word)}c"
+
+            # Update the index for the next search
+            index = end_index
+
+            if clean_word.lower() not in spell:
+                # Highlight the misspelled word
+                text_widget.tag_add("misspelled", start_index, end_index)
 
     def on_right_click(self, event, text_widget, spell):
         # Get the index of the mouse click
@@ -1614,10 +3617,12 @@ class RTVMApp:
                 # No ' - ', treat the entire text as comment
                 self.current_comments[obj_id] = new_text.strip()
 
-
-
+        # Save comments to Excel file immediately
+        self.save_comments_to_excel()
+        
 
 if __name__ == "__main__":
     root = tk.Tk()
     app = RTVMApp(root)
     root.mainloop()
+    
